@@ -6,8 +6,9 @@ from aiohttp import web
 
 from app.bot import create_bot, create_dispatcher
 from app.config import settings
+from app.db import init_db
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 log = logging.getLogger("bot")
 
 
@@ -50,6 +51,9 @@ async def main() -> None:
 
     if not settings.bot_token:
         raise SystemExit("BOT_TOKEN is empty — заполни .env перед запуском")
+
+    await init_db()
+    log.info("db ready: %s", settings.database_url)
 
     runner = await start_web_server()
     bot = create_bot()
