@@ -8,7 +8,7 @@ from app.bot import create_bot, create_dispatcher
 from app.config import settings
 from app.db import init_db
 
-VERSION = "0.4.6"
+VERSION = "0.5.0"
 log = logging.getLogger("bot")
 
 

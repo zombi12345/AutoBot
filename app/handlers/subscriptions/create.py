@@ -10,7 +10,7 @@ from aiogram.types import (
     Message,
 )
 
-from app.data.cars import BRAND_NAMES, BRANDS, PRICES, YEARS
+from app.data.cars_full import BRAND_NAMES, BRANDS
 from app.db.repositories.subscriptions import create_subscription
 from app.db.repositories.users import get_or_create_user
 from app.keyboards.main_menu import BTN_LONG_SEARCH, main_menu_kb
@@ -19,8 +19,7 @@ from app.utils.fuzzy import find_brand, find_model
 
 router = Router(name="subs_create")
 
-BRANDS_PER_PAGE = 8     # пагинация марок
-MODELS_PER_PAGE = 999   # все модели марки на одной клавиатуре
+BRANDS_PER_PAGE = 8
 
 
 def _manual_btn(field: str) -> InlineKeyboardButton:
@@ -29,16 +28,6 @@ def _manual_btn(field: str) -> InlineKeyboardButton:
 
 def _cancel_btn() -> InlineKeyboardButton:
     return InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel")
-
-
-def _chunk_rows(items: list[str], start: int, per_row: int = 2) -> list[list[InlineKeyboardButton]]:
-    rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(items), per_row):
-        rows.append([
-            InlineKeyboardButton(text=name, callback_data=f"__CB__")
-            for name in items[i:i + per_row]
-        ])
-    return rows
 
 
 def render_brands(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
@@ -82,7 +71,7 @@ def render_models(brand_idx: int) -> tuple[str, InlineKeyboardMarkup]:
 
 
 def render_years(field: str, min_year: int | None = None) -> tuple[str, InlineKeyboardMarkup]:
-    years = [y for y in YEARS if min_year is None or y >= min_year]
+    years = [y for y in range(2026, 1989, -1) if min_year is None or y >= min_year]
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(years), 4):
         rows.append([
@@ -99,7 +88,7 @@ def render_years(field: str, min_year: int | None = None) -> tuple[str, InlineKe
 
 
 def render_prices(field: str, min_price: int | None = None) -> tuple[str, InlineKeyboardMarkup]:
-    prices = [p for p in PRICES if min_price is None or p >= min_price]
+    prices = [p for p in [0, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 18000, 20000, 25000, 30000, 40000, 50000, 70000, 100000, 150000, 200000] if min_price is None or p >= min_price]
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(prices), 4):
         rows.append([
