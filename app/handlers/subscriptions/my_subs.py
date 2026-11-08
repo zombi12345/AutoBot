@@ -10,8 +10,6 @@ from app.keyboards.main_menu import BTN_MY_SUBS
 
 router = Router(name="subs_list")
 
-CB_PREFIX = "subs"
-
 
 def _label(sub) -> str:
     parts: list[str] = []
@@ -31,14 +29,14 @@ def build_list_kb(subs: list) -> InlineKeyboardMarkup:
     for s in subs:
         icon = "⏸" if s.status == "paused" else "▶"
         label = f"{icon} #{s.id} {_label(s)}"
-        if len(label) > 60:
-            label = label[:57] + "…"
+        if len(label) > 55:
+            label = label[:52] + "…"
         if s.status == "paused":
             cb = f"subs:do:resume:{s.id}"
-            btn = "▶ Продолжить"
+            btn = "▶"
         else:
             cb = f"subs:do:pause:{s.id}"
-            btn = "⏸ Пауза"
+            btn = "⏸"
         rows.append([
             InlineKeyboardButton(text=label, callback_data=f"subs:info:{s.id}"),
             InlineKeyboardButton(text=btn, callback_data=cb),
@@ -56,12 +54,12 @@ def build_text(subs: list) -> str:
     lines = [
         f"📋 <b>Мои подписки</b> — всего {len(subs)} (active: {active}, paused: {paused})",
         "",
-        "⏸ — пауза, ▶ — продолжить, 🗑 — удалить",
+        "Тапни название → карточка с редактированием.",
     ]
     return "\n".join(lines)
 
 
-async def _load(message_or_cb, user) -> tuple[list, str]:
+async def _load(user) -> tuple[list, str]:
     db_user = await get_or_create_user(user.id, username=user.username, first_name=user.first_name)
     subs = await list_user_subscriptions(db_user.id)
     return subs, build_text(subs)
@@ -72,7 +70,7 @@ async def show_my_subs(message: Message) -> None:
     u = message.from_user
     if u is None:
         return
-    subs, text = await _load(message, u)
+    subs, text = await _load(u)
     await message.answer(text, reply_markup=build_list_kb(subs))
 
 
@@ -81,15 +79,9 @@ async def on_refresh(cb: CallbackQuery) -> None:
     if cb.from_user is None or cb.message is None:
         await cb.answer()
         return
-    subs, text = await _load(cb, cb.from_user)
+    subs, text = await _load(cb.from_user)
     try:
         await cb.message.edit_text(text, reply_markup=build_list_kb(subs))
     except TelegramBadRequest:
         pass
     await cb.answer("Обновлено")
-
-
-@router.callback_query(F.data.startswith("subs:info:"))
-async def on_info(cb: CallbackQuery) -> None:
-    sub_id = cb.data.split(":")[2]
-    await cb.answer(f"Подписка #{sub_id}", show_alert=False)

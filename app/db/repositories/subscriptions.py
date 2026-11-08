@@ -101,3 +101,20 @@ async def mark_checked(sub_id: int, new_seen_ids: list[str]) -> None:
         sub.seen_listing_ids = seen[-_SEEN_LIMIT:]
         sub.last_checked_at = datetime.now(timezone.utc)
         await s.commit()
+
+async def get_subscription(sub_id: int) -> SearchSubscription | None:
+    async with async_session_maker() as s:
+        return await s.get(SearchSubscription, sub_id)
+
+
+async def update_subscription(sub_id: int, **fields) -> bool:
+    allowed = {"brand", "model", "year_from", "year_to", "price_from", "price_to", "status", "source", "extra"}
+    async with async_session_maker() as s:
+        sub = await s.get(SearchSubscription, sub_id)
+        if sub is None:
+            return False
+        for k, v in fields.items():
+            if k in allowed:
+                setattr(sub, k, v)
+        await s.commit()
+        return True

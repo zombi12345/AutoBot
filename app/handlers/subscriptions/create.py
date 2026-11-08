@@ -11,7 +11,7 @@ from aiogram.types import (
 )
 
 from app.data.cars_full import BRAND_NAMES, BRANDS
-from app.db.repositories.subscriptions import create_subscription
+from app.db.repositories.subscriptions import create_subscription, update_subscription
 from app.db.repositories.users import get_or_create_user
 from app.keyboards.main_menu import BTN_LONG_SEARCH, main_menu_kb
 from app.states.subscription import CreateSubscription
@@ -88,7 +88,9 @@ def render_years(field: str, min_year: int | None = None) -> tuple[str, InlineKe
 
 
 def render_prices(field: str, min_price: int | None = None) -> tuple[str, InlineKeyboardMarkup]:
-    prices = [p for p in [0, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 18000, 20000, 25000, 30000, 40000, 50000, 70000, 100000, 150000, 200000] if min_price is None or p >= min_price]
+    base = [0, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 18000,
+            20000, 25000, 30000, 40000, 50000, 70000, 100000, 150000, 200000]
+    prices = [p for p in base if min_price is None or p >= min_price]
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(prices), 4):
         rows.append([
@@ -136,6 +138,20 @@ async def safe_edit(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup) -> N
     await cb.answer()
 
 
+async def _try_save_edit(cb: CallbackQuery, state: FSMContext, field: str, value) -> bool:
+    """Если в режиме редактирования — сохраняет в БД, возвращает в карточку, True.
+    Иначе False (продолжаем обычный каскад)."""
+    d = await state.get_data()
+    edit_id = d.get("edit_sub_id")
+    if not edit_id:
+        return False
+    await update_subscription(int(edit_id), **{field: value})
+    await state.clear()
+    from app.handlers.subscriptions.detail import show_detail
+    await show_detail(cb, int(edit_id))
+    return True
+
+
 # ---------- Entry ----------
 
 @router.message(F.text == BTN_LONG_SEARCH)
@@ -162,13 +178,15 @@ async def on_brand_page(cb: CallbackQuery) -> None:
 async def on_brand_pick(cb: CallbackQuery, state: FSMContext) -> None:
     idx = int(cb.data.split(":")[2])
     brand = BRAND_NAMES[idx]
+    if await _try_save_edit(cb, state, "brand", brand):
+        return
     await state.update_data(brand=brand, brand_idx=idx)
     await state.set_state(CreateSubscription.model)
     text, kb = render_models(idx)
     await safe_edit(cb, text, kb)
 
 
-# ---------- Модель (без пагинации) ----------
+# ---------- Модель ----------
 
 @router.callback_query(F.data.startswith("cs:m:"))
 async def on_model_pick(cb: CallbackQuery, state: FSMContext) -> None:
@@ -176,6 +194,8 @@ async def on_model_pick(cb: CallbackQuery, state: FSMContext) -> None:
     brand_idx, model_idx = int(parts[2]), int(parts[3])
     brand = BRAND_NAMES[brand_idx]
     model = BRANDS[brand][model_idx]
+    if await _try_save_edit(cb, state, "model", model):
+        return
     await state.update_data(model=model)
     await state.set_state(CreateSubscription.year_from)
     text, kb = render_years("yf")
@@ -184,6 +204,8 @@ async def on_model_pick(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "cs:skip:model")
 async def on_skip_model(cb: CallbackQuery, state: FSMContext) -> None:
+    if await _try_save_edit(cb, state, "model", None):
+        return
     await state.update_data(model=None)
     await state.set_state(CreateSubscription.year_from)
     text, kb = render_years("yf")
@@ -195,6 +217,8 @@ async def on_skip_model(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("cs:yf:"))
 async def on_year_from(cb: CallbackQuery, state: FSMContext) -> None:
     year = int(cb.data.split(":")[2])
+    if await _try_save_edit(cb, state, "year_from", year):
+        return
     await state.update_data(year_from=year)
     await state.set_state(CreateSubscription.year_to)
     text, kb = render_years("yd", min_year=year)
@@ -203,6 +227,8 @@ async def on_year_from(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "cs:skip:yf")
 async def on_skip_yf(cb: CallbackQuery, state: FSMContext) -> None:
+    if await _try_save_edit(cb, state, "year_from", None):
+        return
     await state.update_data(year_from=None)
     await state.set_state(CreateSubscription.year_to)
     text, kb = render_years("yd")
@@ -212,6 +238,8 @@ async def on_skip_yf(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("cs:yd:"))
 async def on_year_to(cb: CallbackQuery, state: FSMContext) -> None:
     year = int(cb.data.split(":")[2])
+    if await _try_save_edit(cb, state, "year_to", year):
+        return
     await state.update_data(year_to=year)
     await state.set_state(CreateSubscription.price_from)
     text, kb = render_prices("pf")
@@ -220,6 +248,8 @@ async def on_year_to(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "cs:skip:yd")
 async def on_skip_yd(cb: CallbackQuery, state: FSMContext) -> None:
+    if await _try_save_edit(cb, state, "year_to", None):
+        return
     await state.update_data(year_to=None)
     await state.set_state(CreateSubscription.price_from)
     text, kb = render_prices("pf")
@@ -231,7 +261,10 @@ async def on_skip_yd(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("cs:pf:"))
 async def on_price_from(cb: CallbackQuery, state: FSMContext) -> None:
     price = int(cb.data.split(":")[2])
-    await state.update_data(price_from=price if price > 0 else None)
+    value = price if price > 0 else None
+    if await _try_save_edit(cb, state, "price_from", value):
+        return
+    await state.update_data(price_from=value)
     await state.set_state(CreateSubscription.price_to)
     text, kb = render_prices("pd", min_price=price)
     await safe_edit(cb, text, kb)
@@ -239,6 +272,8 @@ async def on_price_from(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "cs:skip:pf")
 async def on_skip_pf(cb: CallbackQuery, state: FSMContext) -> None:
+    if await _try_save_edit(cb, state, "price_from", None):
+        return
     await state.update_data(price_from=None)
     await state.set_state(CreateSubscription.price_to)
     text, kb = render_prices("pd")
@@ -248,7 +283,10 @@ async def on_skip_pf(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("cs:pd:"))
 async def on_price_to(cb: CallbackQuery, state: FSMContext) -> None:
     price = int(cb.data.split(":")[2])
-    await state.update_data(price_to=price if price > 0 else None)
+    value = price if price > 0 else None
+    if await _try_save_edit(cb, state, "price_to", value):
+        return
+    await state.update_data(price_to=value)
     await state.set_state(CreateSubscription.confirm)
     d = await state.get_data()
     text, kb = render_preview(d)
@@ -257,6 +295,8 @@ async def on_price_to(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "cs:skip:pd")
 async def on_skip_pd(cb: CallbackQuery, state: FSMContext) -> None:
+    if await _try_save_edit(cb, state, "price_to", None):
+        return
     await state.update_data(price_to=None)
     await state.set_state(CreateSubscription.confirm)
     d = await state.get_data()
@@ -264,7 +304,7 @@ async def on_skip_pd(cb: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(cb, text, kb)
 
 
-# ---------- Ручной ввод: кнопки ----------
+# ---------- Ручной ввод (только для создания) ----------
 
 @router.callback_query(F.data.startswith("cs:manual:"))
 async def on_manual(cb: CallbackQuery, state: FSMContext) -> None:
@@ -283,7 +323,7 @@ async def on_manual(cb: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(st)
     prompts = {
-        "brand": "Введи марку (BMW, Geely, Лада, ВАЗ, Фольксваген…)",
+        "brand": "Введи марку (BMW, Geely, Лада, ВАЗ…)",
         "model": "Введи модель (X5, Coolray, Веста…)",
         "yf": "Введи год ОТ (например: 2015)",
         "yd": "Введи год ДО (например: 2023)",
@@ -297,8 +337,6 @@ async def on_manual(cb: CallbackQuery, state: FSMContext) -> None:
             pass
     await cb.answer()
 
-
-# ---------- Ручной ввод: приём текста ----------
 
 @router.message(CreateSubscription.manual_brand, F.text)
 async def on_manual_brand(message: Message, state: FSMContext) -> None:
@@ -496,7 +534,13 @@ async def on_done(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "cs:cancel")
 async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    d = await state.get_data()
+    edit_id = d.get("edit_sub_id")
     await state.clear()
+    if edit_id:
+        from app.handlers.subscriptions.detail import show_detail
+        await show_detail(cb, int(edit_id))
+        return
     if cb.message is not None:
         try:
             await cb.message.edit_text("❌ Создание отменено.")
