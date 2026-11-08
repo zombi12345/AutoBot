@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+from typing import Annotated
+
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -10,10 +13,12 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        env_ignore_empty=False,
     )
 
     bot_token: str = ""
-    admin_ids: list[int] = []
+    # NoDecode -> pydantic-settings не трогает JSON, отдаёт raw string в валидатор
+    admin_ids: Annotated[list[int], NoDecode] = []
     database_url: str = "sqlite+aiosqlite:///data/bot.db"
     env: str = "dev"
     log_level: str = "INFO"
@@ -27,7 +32,13 @@ class Settings(BaseSettings):
         if v is None or v == "":
             return []
         if isinstance(v, str):
-            return [int(x.strip()) for x in v.split(",") if x.strip()]
+            s = v.strip()
+            if not s:
+                return []
+            # поддержка обоих форматов: "1,2,3" и "[1,2,3]"
+            if s.startswith("["):
+                return [int(x) for x in json.loads(s)]
+            return [int(x.strip()) for x in s.split(",") if x.strip()]
         if isinstance(v, (list, tuple)):
             return [int(x) for x in v]
         return []
