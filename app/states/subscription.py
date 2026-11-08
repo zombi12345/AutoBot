@@ -15,3 +15,5 @@ class CreateSubscription(StatesGroup):
     manual_year_to = State()
     manual_price_from = State()
     manual_price_to = State()
+    confirm_brand = State()
+    confirm_model = State()

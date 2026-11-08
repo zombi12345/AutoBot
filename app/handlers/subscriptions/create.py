@@ -15,13 +15,13 @@ from app.db.repositories.subscriptions import create_subscription
 from app.db.repositories.users import get_or_create_user
 from app.keyboards.main_menu import BTN_LONG_SEARCH, main_menu_kb
 from app.states.subscription import CreateSubscription
+from app.utils.fuzzy import find_brand, find_model
 
 router = Router(name="subs_create")
 
-PER_PAGE = 8
+BRANDS_PER_PAGE = 8     # пагинация марок
+MODELS_PER_PAGE = 999   # все модели марки на одной клавиатуре
 
-
-# ---------- Рендеры ----------
 
 def _manual_btn(field: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text="✏️ Ввести вручную", callback_data=f"cs:manual:{field}")
@@ -31,9 +31,19 @@ def _cancel_btn() -> InlineKeyboardButton:
     return InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel")
 
 
+def _chunk_rows(items: list[str], start: int, per_row: int = 2) -> list[list[InlineKeyboardButton]]:
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(0, len(items), per_row):
+        rows.append([
+            InlineKeyboardButton(text=name, callback_data=f"__CB__")
+            for name in items[i:i + per_row]
+        ])
+    return rows
+
+
 def render_brands(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
-    start = page * PER_PAGE
-    end = start + PER_PAGE
+    start = page * BRANDS_PER_PAGE
+    end = start + BRANDS_PER_PAGE
     chunk = BRAND_NAMES[start:end]
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(chunk), 2):
@@ -50,34 +60,25 @@ def render_brands(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
         rows.append(nav)
     rows.append([_manual_btn("brand")])
     rows.append([_cancel_btn()])
-    return f"🚗 <b>Выбери марку</b> (стр. {page + 1})", InlineKeyboardMarkup(inline_keyboard=rows)
+    total_pages = (len(BRAND_NAMES) + BRANDS_PER_PAGE - 1) // BRANDS_PER_PAGE
+    return f"🚗 <b>Выбери марку</b> (стр. {page + 1}/{total_pages})", InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def render_models(brand_idx: int, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
+def render_models(brand_idx: int) -> tuple[str, InlineKeyboardMarkup]:
     brand = BRAND_NAMES[brand_idx]
     models = BRANDS[brand]
-    start = page * PER_PAGE
-    end = start + PER_PAGE
-    chunk = models[start:end]
     rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(chunk), 2):
+    for i in range(0, len(models), 2):
         rows.append([
-            InlineKeyboardButton(text=name, callback_data=f"cs:m:{brand_idx}:{start + i + j}")
-            for j, name in enumerate(chunk[i:i + 2])
+            InlineKeyboardButton(text=name, callback_data=f"cs:m:{brand_idx}:{i + j}")
+            for j, name in enumerate(models[i:i + 2])
         ])
-    nav: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav.append(InlineKeyboardButton(text="◀", callback_data=f"cs:mp:{brand_idx}:{page - 1}"))
-    if end < len(models):
-        nav.append(InlineKeyboardButton(text="▶", callback_data=f"cs:mp:{brand_idx}:{page + 1}"))
-    if nav:
-        rows.append(nav)
     rows.append([
         InlineKeyboardButton(text="Пропустить", callback_data="cs:skip:model"),
         _manual_btn("model"),
     ])
     rows.append([_cancel_btn()])
-    return f"🚗 <b>{brand}</b> — выбери модель", InlineKeyboardMarkup(inline_keyboard=rows)
+    return f"🚗 <b>{brand}</b> — выбери модель (всего {len(models)})", InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def render_years(field: str, min_year: int | None = None) -> tuple[str, InlineKeyboardMarkup]:
@@ -174,19 +175,11 @@ async def on_brand_pick(cb: CallbackQuery, state: FSMContext) -> None:
     brand = BRAND_NAMES[idx]
     await state.update_data(brand=brand, brand_idx=idx)
     await state.set_state(CreateSubscription.model)
-    text, kb = render_models(idx, 0)
+    text, kb = render_models(idx)
     await safe_edit(cb, text, kb)
 
 
-# ---------- Модель ----------
-
-@router.callback_query(F.data.startswith("cs:mp:"))
-async def on_model_page(cb: CallbackQuery) -> None:
-    parts = cb.data.split(":")
-    brand_idx, page = int(parts[2]), int(parts[3])
-    text, kb = render_models(brand_idx, page)
-    await safe_edit(cb, text, kb)
-
+# ---------- Модель (без пагинации) ----------
 
 @router.callback_query(F.data.startswith("cs:m:"))
 async def on_model_pick(cb: CallbackQuery, state: FSMContext) -> None:
@@ -208,7 +201,7 @@ async def on_skip_model(cb: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(cb, text, kb)
 
 
-# ---------- Год от ----------
+# ---------- Год от / до ----------
 
 @router.callback_query(F.data.startswith("cs:yf:"))
 async def on_year_from(cb: CallbackQuery, state: FSMContext) -> None:
@@ -227,8 +220,6 @@ async def on_skip_yf(cb: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(cb, text, kb)
 
 
-# ---------- Год до ----------
-
 @router.callback_query(F.data.startswith("cs:yd:"))
 async def on_year_to(cb: CallbackQuery, state: FSMContext) -> None:
     year = int(cb.data.split(":")[2])
@@ -246,7 +237,7 @@ async def on_skip_yd(cb: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(cb, text, kb)
 
 
-# ---------- Цена от ----------
+# ---------- Цена от / до ----------
 
 @router.callback_query(F.data.startswith("cs:pf:"))
 async def on_price_from(cb: CallbackQuery, state: FSMContext) -> None:
@@ -264,8 +255,6 @@ async def on_skip_pf(cb: CallbackQuery, state: FSMContext) -> None:
     text, kb = render_prices("pd")
     await safe_edit(cb, text, kb)
 
-
-# ---------- Цена до ----------
 
 @router.callback_query(F.data.startswith("cs:pd:"))
 async def on_price_to(cb: CallbackQuery, state: FSMContext) -> None:
@@ -305,12 +294,12 @@ async def on_manual(cb: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(st)
     prompts = {
-        "brand": "Введи марку (например: BMW, Geely, Lada)",
-        "model": "Введи модель (например: X5, Coolray, Vesta)",
-        "yf": "Введи год ОТ (число, например: 2015)",
-        "yd": "Введи год ДО (число, например: 2023)",
-        "pf": "Введи цену ОТ в USD (число, например: 10000)",
-        "pd": "Введи цену ДО в USD (число, например: 30000)",
+        "brand": "Введи марку (BMW, Geely, Лада, ВАЗ, Фольксваген…)",
+        "model": "Введи модель (X5, Coolray, Веста…)",
+        "yf": "Введи год ОТ (например: 2015)",
+        "yd": "Введи год ДО (например: 2023)",
+        "pf": "Введи цену ОТ в USD (например: 10000)",
+        "pd": "Введи цену ДО в USD (например: 30000)",
     }
     if cb.message is not None:
         try:
@@ -322,21 +311,61 @@ async def on_manual(cb: CallbackQuery, state: FSMContext) -> None:
 
 # ---------- Ручной ввод: приём текста ----------
 
-async def _manual_brand(message: Message, state: FSMContext) -> None:
+@router.message(CreateSubscription.manual_brand, F.text)
+async def on_manual_brand(message: Message, state: FSMContext) -> None:
     txt = (message.text or "").strip()
     if not txt:
         return
+    canonical, mtype = find_brand(txt, BRAND_NAMES)
+    if mtype == "exact" and canonical:
+        idx = BRAND_NAMES.index(canonical)
+        await state.update_data(brand=canonical, brand_idx=idx)
+        await state.set_state(CreateSubscription.model)
+        text, kb = render_models(idx)
+        await message.answer(text, reply_markup=kb)
+        return
+    if mtype == "fuzzy" and canonical:
+        idx = BRAND_NAMES.index(canonical)
+        await state.update_data(pending_brand=canonical, pending_brand_idx=idx, raw_brand=txt)
+        await state.set_state(CreateSubscription.confirm_brand)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"✅ {canonical}", callback_data="cs:fb:Y")],
+            [InlineKeyboardButton(text=f"✏️ Оставить «{txt}»", callback_data="cs:fb:N")],
+        ])
+        await message.answer(f"Возможно, ты имел в виду <b>{canonical}</b>?", reply_markup=kb)
+        return
     await state.update_data(brand=txt, brand_idx=None)
-    await state.set_state(CreateSubscription.model)
-    # модели для ручной марки неизвестны — сразу год
     await state.set_state(CreateSubscription.year_from)
     text, kb = render_years("yf")
-    await message.answer(text, reply_markup=kb)
+    await message.answer(f"Марка «{txt}» не в справочнике — сохраню как есть, модели пропущу.\n\n{text}", reply_markup=kb)
 
 
-async def _manual_model(message: Message, state: FSMContext) -> None:
+@router.message(CreateSubscription.manual_model, F.text)
+async def on_manual_model(message: Message, state: FSMContext) -> None:
     txt = (message.text or "").strip()
     if not txt:
+        return
+    d = await state.get_data()
+    brand_idx = d.get("brand_idx")
+    canonical = None
+    mtype = "none"
+    if brand_idx is not None and brand_idx < len(BRAND_NAMES):
+        brand = BRAND_NAMES[brand_idx]
+        canonical, mtype = find_model(txt, BRANDS[brand])
+    if mtype == "exact" and canonical:
+        await state.update_data(model=canonical)
+        await state.set_state(CreateSubscription.year_from)
+        text, kb = render_years("yf")
+        await message.answer(text, reply_markup=kb)
+        return
+    if mtype == "fuzzy" and canonical:
+        await state.update_data(pending_model=canonical, raw_model=txt)
+        await state.set_state(CreateSubscription.confirm_model)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"✅ {canonical}", callback_data="cs:fm:Y")],
+            [InlineKeyboardButton(text=f"✏️ Оставить «{txt}»", callback_data="cs:fm:N")],
+        ])
+        await message.answer(f"Возможно, ты имел в виду <b>{canonical}</b>?", reply_markup=kb)
         return
     await state.update_data(model=txt)
     await state.set_state(CreateSubscription.year_from)
@@ -344,7 +373,8 @@ async def _manual_model(message: Message, state: FSMContext) -> None:
     await message.answer(text, reply_markup=kb)
 
 
-async def _manual_year_from(message: Message, state: FSMContext) -> None:
+@router.message(CreateSubscription.manual_year_from, F.text)
+async def on_manual_year_from(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     if not raw.isdigit() or not (1980 <= int(raw) <= 2026):
         await message.answer("Нужен год от 1980 до 2026. Попробуй ещё раз.")
@@ -356,7 +386,8 @@ async def _manual_year_from(message: Message, state: FSMContext) -> None:
     await message.answer(text, reply_markup=kb)
 
 
-async def _manual_year_to(message: Message, state: FSMContext) -> None:
+@router.message(CreateSubscription.manual_year_to, F.text)
+async def on_manual_year_to(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     if not raw.isdigit() or not (1980 <= int(raw) <= 2026):
         await message.answer("Нужен год от 1980 до 2026. Попробуй ещё раз.")
@@ -368,7 +399,8 @@ async def _manual_year_to(message: Message, state: FSMContext) -> None:
     await message.answer(text, reply_markup=kb)
 
 
-async def _manual_price_from(message: Message, state: FSMContext) -> None:
+@router.message(CreateSubscription.manual_price_from, F.text)
+async def on_manual_price_from(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip().replace(" ", "")
     if not raw.isdigit():
         await message.answer("Нужно число (USD). Попробуй ещё раз.")
@@ -380,7 +412,8 @@ async def _manual_price_from(message: Message, state: FSMContext) -> None:
     await message.answer(text, reply_markup=kb)
 
 
-async def _manual_price_to(message: Message, state: FSMContext) -> None:
+@router.message(CreateSubscription.manual_price_to, F.text)
+async def on_manual_price_to(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip().replace(" ", "")
     if not raw.isdigit():
         await message.answer("Нужно число (USD). Попробуй ещё раз.")
@@ -393,34 +426,57 @@ async def _manual_price_to(message: Message, state: FSMContext) -> None:
     await message.answer(text, reply_markup=kb)
 
 
-@router.message(CreateSubscription.manual_brand, F.text)
-async def on_manual_brand(message: Message, state: FSMContext) -> None:
-    await _manual_brand(message, state)
+# ---------- Fuzzy: бренд ----------
+
+@router.callback_query(F.data == "cs:fb:Y")
+async def on_confirm_brand_yes(cb: CallbackQuery, state: FSMContext) -> None:
+    d = await state.get_data()
+    idx = d.get("pending_brand_idx")
+    if idx is None or idx >= len(BRAND_NAMES):
+        await cb.answer()
+        return
+    canonical = BRAND_NAMES[idx]
+    await state.update_data(brand=canonical, brand_idx=idx,
+                            pending_brand=None, pending_brand_idx=None, raw_brand=None)
+    await state.set_state(CreateSubscription.model)
+    text, kb = render_models(idx)
+    await safe_edit(cb, text, kb)
 
 
-@router.message(CreateSubscription.manual_model, F.text)
-async def on_manual_model(message: Message, state: FSMContext) -> None:
-    await _manual_model(message, state)
+@router.callback_query(F.data == "cs:fb:N")
+async def on_confirm_brand_no(cb: CallbackQuery, state: FSMContext) -> None:
+    d = await state.get_data()
+    raw = d.get("raw_brand") or "—"
+    await state.update_data(brand=raw, brand_idx=None,
+                            pending_brand=None, pending_brand_idx=None, raw_brand=None)
+    await state.set_state(CreateSubscription.year_from)
+    text, kb = render_years("yf")
+    await safe_edit(cb, f"Ок, сохраняю «{raw}» как есть.\n\n{text}", kb)
 
 
-@router.message(CreateSubscription.manual_year_from, F.text)
-async def on_manual_year_from(message: Message, state: FSMContext) -> None:
-    await _manual_year_from(message, state)
+# ---------- Fuzzy: модель ----------
+
+@router.callback_query(F.data == "cs:fm:Y")
+async def on_confirm_model_yes(cb: CallbackQuery, state: FSMContext) -> None:
+    d = await state.get_data()
+    canonical = d.get("pending_model")
+    if not canonical:
+        await cb.answer()
+        return
+    await state.update_data(model=canonical, pending_model=None, raw_model=None)
+    await state.set_state(CreateSubscription.year_from)
+    text, kb = render_years("yf")
+    await safe_edit(cb, text, kb)
 
 
-@router.message(CreateSubscription.manual_year_to, F.text)
-async def on_manual_year_to(message: Message, state: FSMContext) -> None:
-    await _manual_year_to(message, state)
-
-
-@router.message(CreateSubscription.manual_price_from, F.text)
-async def on_manual_price_from(message: Message, state: FSMContext) -> None:
-    await _manual_price_from(message, state)
-
-
-@router.message(CreateSubscription.manual_price_to, F.text)
-async def on_manual_price_to(message: Message, state: FSMContext) -> None:
-    await _manual_price_to(message, state)
+@router.callback_query(F.data == "cs:fm:N")
+async def on_confirm_model_no(cb: CallbackQuery, state: FSMContext) -> None:
+    d = await state.get_data()
+    raw = d.get("raw_model") or "—"
+    await state.update_data(model=raw, pending_model=None, raw_model=None)
+    await state.set_state(CreateSubscription.year_from)
+    text, kb = render_years("yf")
+    await safe_edit(cb, text, kb)
 
 
 # ---------- Создать / Отмена ----------
