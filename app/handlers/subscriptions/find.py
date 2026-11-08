@@ -32,14 +32,14 @@ def _price_badge(price, median):
         return "[ ]"
     ratio = price / median
     if ratio <= 0.7:
-        return "[GG]"
+        return "💚"
     if ratio <= 0.9:
-        return "[G]"
+        return "🟢"
     if ratio <= 1.1:
-        return "[=]"
+        return "⚪"
     if ratio <= 1.3:
-        return "[O]"
-    return "[R]"
+        return "🟠"
+    return "🔴"
 
 
 def _escape(s):
@@ -56,7 +56,7 @@ def _render_item(r, median):
     lines = [f"{badge} <b>{price}</b> | {title} | {year}"]
     if params and params != str(year):
         lines.append(f"<i>{_escape(params)}</i>")
-    lines.append(f'<a href="{r["url"]}">-> Открыть на av.by</a>')
+    lines.append(f'<a href="{r["url"]}">→ Открыть на av.by</a>')
     return "\n".join(lines)
 
 def _build_header(sub, page_items, total, offset, page, median):
@@ -71,7 +71,7 @@ def _build_header(sub, page_items, total, offset, page, median):
     start = offset + 1
     end = offset + len(page_items)
     lines = [
-        f"Найдено {total} | стр. {page} ({start}-{end})",
+        f"🔍 Найдено {total} · стр. {page} ({start}–{end})",
         f"Критерии: <i>{_escape(' '.join(crit)) or '-'}</i>",
     ]
     if median:
@@ -90,16 +90,16 @@ def _build_kb(sub_id, page, offset, total, has_more):
     if has_more:
         next_offset = offset + PAGE_SIZE
         rows.append([InlineKeyboardButton(
-            text=f"Ещё {PAGE_SIZE} (стр. {page + 1})",
+            text=f"🔽 Ещё {PAGE_SIZE} (стр. {page + 1})",
             callback_data=f"subs:find:{sub_id}:{next_offset}",
         )])
     else:
         rows.append([InlineKeyboardButton(
-            text=f"Это все ({total})",
+            text=f"✅ Это все ({total})",
             callback_data="subs:noop",
         )])
     rows.append([InlineKeyboardButton(
-        text="<- К подписке", callback_data=f"subs:back:{sub_id}",
+        text="← К подписке", callback_data=f"subs:back:{sub_id}",
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -111,7 +111,7 @@ async def _run_search(cb, sub_id, offset):
 
     if cb.message is not None:
         try:
-            await cb.message.edit_text("Ищу на av.by...")
+            await cb.message.edit_text("🔍 Ищу на av.by…")
         except TelegramBadRequest:
             pass
 
@@ -199,7 +199,7 @@ async def on_find(cb):
         return
     sub_id = int(parts[2])
     offset = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 0
-    await cb.answer("Ищу...")
+    await cb.answer("🔍 Ищу...")
     await _run_search(cb, sub_id, offset)
 
 
