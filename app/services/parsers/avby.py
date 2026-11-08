@@ -22,34 +22,35 @@ HEADERS = {
 API_ENDPOINTS = (
     "{api}/filtering/cars?page=1&page_size={n}",
     "{api}/offers/cars/search?page=1&per_page={n}",
-    "{api}/cars/search?page=1&per_page={n}",
 )
 
+DEFAULT_LIMIT = 15
 
-async def search(criteria: dict[str, Any], limit: int = 5) -> list[dict]:
+
+async def search(criteria: dict[str, Any], limit: int = DEFAULT_LIMIT, page: int = 1) -> list[dict]:
+    """Ищет объявления на av.by. page — номер страницы (1-based)."""
     body = _build_body(criteria)
 
-    # 1) API через curl_cffi (обход Cloudflare TLS fingerprint)
+    # 1) API (может быть 404 — не критично, идём в HTML)
     for tmpl in API_ENDPOINTS:
         url = tmpl.format(api=AVBY_API, n=limit)
         data = await _post_api(url, body)
         if data is not None:
             results = _parse_api(data, limit)
             if results:
-                log.info("avby: curl_cffi OK, %d results from %s", len(results), url)
+                log.info("avby: API OK, %d results", len(results))
                 return results
 
-    # 2) HTML fallback (cars.av.by/filter)
-    log.info("avby: API failed → HTML fallback")
-    html_url = _build_html_url(criteria)
+    # 2) HTML fallback
+    html_url = _build_html_url(criteria, page=page)
     html = await _get_html(html_url)
     if html:
         results = _parse_html(html, limit)
         if results:
-            log.info("avby: HTML fallback OK, %d results", len(results))
+            log.info("avby: HTML fallback OK, page=%s, %d results", page, len(results))
             return results
 
-    log.info("avby: no results for %s", body)
+    log.info("avby: no results for %s (page=%s)", body, page)
     return []
 
 
@@ -78,7 +79,7 @@ def _build_body(criteria: dict) -> dict[str, Any]:
     return body
 
 
-def _build_html_url(criteria: dict) -> str:
+def _build_html_url(criteria: dict, page: int = 1) -> str:
     params: list[tuple[str, str | int]] = []
     if criteria.get("brand_id"):
         params.append(("brands[0][brand]", int(criteria["brand_id"])))
@@ -94,6 +95,8 @@ def _build_html_url(criteria: dict) -> str:
         params.append(("price[max]", int(criteria["price_to"])))
     if not params and criteria.get("query"):
         params.append(("query", str(criteria["query"])))
+    if page > 1:
+        params.append(("page", page))
     return f"{AVBY_WEB}/filter?{urlencode(params)}"
 
 
@@ -102,7 +105,7 @@ async def _post_api(url: str, body: dict) -> dict | None:
         async with AsyncSession(impersonate="chrome124", headers=HEADERS, timeout=20) as s:
             r = await s.post(url, json=body)
             if r.status_code != 200:
-                log.warning("avby API %s: %s", r.status_code, url)
+                log.debug("avby API %s: %s", r.status_code, url)
                 return None
             try:
                 return r.json()
@@ -158,12 +161,26 @@ def _parse_api(data: dict, limit: int) -> list[dict]:
                 "year": year,
                 "price_usd": price_usd,
                 "url": url,
+                "params": "",
             })
         except (KeyError, TypeError, ValueError):
             continue
     return out
 
 
+_PRICE_SELECTORS = (
+    ".listing-item__priceusd",
+    ".listing-item__price-primary",
+    ".listing-item__price",
+    ".listing-item__prices",
+    "[class*='priceusd']",
+    "[class*='price-primary']",
+)
+_TITLE_SELECTORS = (
+    ".listing-item__title-text",
+    ".listing-item__link-text",
+    ".listing-item__title",
+)
 _ITEM_SELECTOR = "div.listing-item, .listing-item"
 
 
@@ -171,7 +188,10 @@ def _parse_html(html: str, limit: int) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     cards = soup.select(_ITEM_SELECTOR)
     out: list[dict] = []
-    for card in cards[:limit]:
+
+    for card in cards:
+        if len(out) >= limit:
+            break
         try:
             link_el = card.select_one("a.listing-item__link, a[href*='/']")
             if not link_el:
@@ -182,22 +202,42 @@ def _parse_html(html: str, limit: int) -> list[dict]:
             if not url.startswith("http"):
                 continue
 
-            title_el = card.select_one(".listing-item__title, .listing-item__link-text")
-            title = title_el.get_text(strip=True) if title_el else "—"
+            # title
+            title = "—"
+            for sel in _TITLE_SELECTORS:
+                el = card.select_one(sel)
+                if el:
+                    t = el.get_text(" ", strip=True)
+                    t = re.sub(r"\s+", " ", t).strip()
+                    if t:
+                        title = t
+                        break
 
+            # year + params (двигатель, КПП, пробег)
             year = None
+            params_text = ""
             params_el = card.select_one(".listing-item__params")
             if params_el:
-                m = re.search(r"(19|20)\d{2}", params_el.get_text(" ", strip=True))
+                params_text = re.sub(r"\s+", " ", params_el.get_text(" ", strip=True)).strip()
+                m = re.search(r"(19|20)\d{2}", params_text)
                 if m:
                     year = int(m.group(0))
 
+            # price — перебор селекторов
             price_usd = None
-            price_el = card.select_one(".listing-item__priceusd, .listing-item__price")
-            if price_el:
-                digits = re.sub(r"\D", "", price_el.get_text())
-                if digits:
-                    price_usd = int(digits)
+            for sel in _PRICE_SELECTORS:
+                el = card.select_one(sel)
+                if not el:
+                    continue
+                text = el.get_text(" ", strip=True)
+                # иногда цена USD в $ или "USD", иногда в BYN — берём число
+                digits = re.sub(r"[^\d]", "", text)
+                if digits and len(digits) >= 3:
+                    try:
+                        price_usd = int(digits)
+                        break
+                    except ValueError:
+                        continue
 
             ad_id = url.rstrip("/").split("/")[-1] or url
             out.append({
@@ -206,6 +246,7 @@ def _parse_html(html: str, limit: int) -> list[dict]:
                 "year": year,
                 "price_usd": price_usd,
                 "url": url,
+                "params": params_text,
             })
         except Exception:
             continue

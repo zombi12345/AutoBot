@@ -8,7 +8,7 @@ from app.bot import create_bot, create_dispatcher
 from app.config import settings
 from app.db import init_db
 
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 log = logging.getLogger("bot")
 
 
@@ -66,6 +66,15 @@ async def main() -> None:
         log.info("bot shutting down")
         await bot.session.close()
         await runner.cleanup()
+
+
+import sys
+import warnings
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+warnings.filterwarnings("ignore", message=".*Proactor event loop.*")
+warnings.filterwarnings("ignore", message=".*Curlm already closed.*")
 
 
 if __name__ == "__main__":

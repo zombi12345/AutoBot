@@ -53,7 +53,7 @@ def render_detail(sub) -> tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton(text="⏸ Пауза", callback_data=f"subs:d:pause:{sid}"),
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"subs:do:del:{sid}"),
         ])
-    rows.append([InlineKeyboardButton(text="🔍 Найти сейчас", callback_data=f"subs:find:{sid}")])
+    rows.append([InlineKeyboardButton(text="🔍 Найти (15)", callback_data=f"subs:find:{sid}")])
     rows.append([InlineKeyboardButton(text="← К списку", callback_data="subs:refresh")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
