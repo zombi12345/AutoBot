@@ -14,6 +14,7 @@ from app.db.base import async_session_maker
 from app.db.models.user import User
 from app.services.parsers.avby import search
 from worker.notifier import send_new
+from app.db.repositories.worker_stats import increment_sent, set_last_run_at
 
 log = logging.getLogger("worker.jobs")
 
@@ -46,6 +47,12 @@ async def run_once(bot: Bot) -> dict:
             log.exception("sub #%s fail: %s", sub.id, e)
             stats["errors"] += 1
     log.info("worker: subs=%s sent=%s errors=%s", stats["subs"], stats["sent"], stats["errors"])
+    try:
+        if stats["sent"]:
+            await increment_sent(stats["sent"])
+        await set_last_run_at()
+    except Exception as e:
+        log.warning("worker stats save fail: %s", e)
     return stats
 
 

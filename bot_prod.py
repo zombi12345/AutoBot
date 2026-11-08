@@ -11,8 +11,9 @@ from sqlalchemy import func, select
 from app.db.base import async_session_maker
 from app.db.models import SearchSubscription
 from app.db.models.subscription import SubscriptionStatus
+from app.db.repositories.worker_stats import get_stats as get_worker_stats
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 log = logging.getLogger("bot")
 
 
@@ -48,14 +49,29 @@ async def handle_admin_stats(request: web.Request) -> web.Response:
             rows = (await s.execute(select(SearchSubscription.seen_listing_ids))).scalars().all()
             for r in rows:
                 seen_total += len(r or [])
+        ws = await get_worker_stats()
         return web.json_response({
             "subs_total": int(total),
             "subs_active": int(active),
             "subs_paused": int(total) - int(active),
             "seen_total": int(seen_total),
+            "sent_total": ws["sent_total"],
+            "last_run_at": ws["last_run_at"],
         })
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_admin_run_worker(request: web.Request) -> web.Response:
+    try:
+        from worker.jobs import run_once as worker_run_once
+        bot = request.app.get("bot")
+        if bot is None:
+            return web.json_response({"error": "bot not attached"}, status=500)
+        stats = await worker_run_once(bot)
+        return web.json_response({"ok": True, **stats})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
 async def start_web_server() -> web.AppRunner:
@@ -63,6 +79,7 @@ async def start_web_server() -> web.AppRunner:
     web_app.router.add_get("/health", handle_health)
     web_app.router.add_get("/version", handle_version)
     web_app.router.add_get("/admin/stats", handle_admin_stats)
+    web_app.router.add_post("/admin/run_worker", handle_admin_run_worker)
     runner = web.AppRunner(web_app)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=settings.port)
@@ -105,6 +122,14 @@ async def main() -> None:
 
     runner = await start_web_server()
     bot = create_bot()
+    # attach bot to aiohttp app для /admin/run_worker
+    try:
+        runner.addresses  # noqa
+        for app_obj in [runner._app]:  # type: ignore[attr-defined]
+            if app_obj is not None:
+                app_obj["bot"] = bot
+    except Exception:
+        pass
     dp = create_dispatcher()
 
     if scheduler is not None:
