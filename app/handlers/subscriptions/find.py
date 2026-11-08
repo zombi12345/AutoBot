@@ -12,8 +12,8 @@ from app.services.parsers.avby import search
 
 router = Router(name="subs_find")
 
+PAGE_SIZE = 15
 MAX_RESULTS = 100
-CHUNK_LIMIT = 3500  # Telegram safe (hard limit 4096)
 
 LEGEND = (
     "💚 ниже рынка на 30%+ · 🟢 ниже на 10%+ · ⚪ рынок (±10%) · "
@@ -47,7 +47,6 @@ def _escape(s: str) -> str:
 
 
 def _render_item(r: dict, median: float | None) -> str:
-    """Одно объявление. Пустая строка между объявлениями — в склейке."""
     badge = _price_badge(r.get("price"), median)
     title = _escape(r["title"])
     price = _fmt(r.get("price"), r.get("currency", "BYN"))
@@ -61,7 +60,8 @@ def _render_item(r: dict, median: float | None) -> str:
     return "\n".join(lines)
 
 
-def _build_header(sub, total: int, median: float | None) -> str:
+def _build_header(sub, page_items: list[dict], total: int,
+                  offset: int, page: int, median: float | None) -> str:
     crit: list[str] = []
     if sub.brand:
         crit.append(sub.brand)
@@ -69,11 +69,11 @@ def _build_header(sub, total: int, median: float | None) -> str:
         crit.append(sub.model)
     if sub.year_from or sub.year_to:
         crit.append(f"{sub.year_from or '...'}–{sub.year_to or '...'}")
-    if sub.price_from or sub.price_to:
-        crit.append(f"${sub.price_from or '...'}–${sub.price_to or '...'} (фильтр)")
 
+    start = offset + 1
+    end = offset + len(page_items)
     lines = [
-        f"🔍 <b>Найдено {total} объявлений</b>",
+        f"🔍 <b>Найдено {total}</b> · стр. {page} ({start}–{end})",
         f"Критерии: <i>{_escape(' '.join(crit)) or '—'}</i>",
     ]
     if median:
@@ -82,34 +82,32 @@ def _build_header(sub, total: int, median: float | None) -> str:
     return "\n".join(lines)
 
 
-def _split_into_chunks(header: str, items: list[dict], median: float | None) -> list[str]:
-    """Разбивает на сообщения ≤ CHUNK_LIMIT. Каждое объявление отделено пустой строкой."""
-    rendered = [_render_item(r, median) for r in items]
-    # разделитель между объявлениями: два \n (пустая строка)
+def _build_body(items: list[dict], median: float | None) -> str:
     SEP = "\n\n"
-
-    chunks: list[str] = []
-    current = header
-    for rendered_item in rendered:
-        candidate = current + SEP + rendered_item if current else rendered_item
-        if len(candidate) > CHUNK_LIMIT:
-            if current:
-                chunks.append(current)
-            current = rendered_item
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return chunks
+    return SEP.join(_render_item(r, median) for r in items)
 
 
-def _build_kb(sub_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="← К подписке", callback_data=f"subs:back:{sub_id}"),
-    ]])
+def _build_kb(sub_id: int, page: int, offset: int,
+              total: int, has_more: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_more:
+        next_offset = offset + PAGE_SIZE
+        rows.append([InlineKeyboardButton(
+            text=f"🔽 Ещё {PAGE_SIZE} (стр. {page + 1})",
+            callback_data=f"subs:find:{sub_id}:{next_offset}",
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            text=f"✅ Это все ({total})",
+            callback_data="subs:noop",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="← К подписке", callback_data=f"subs:back:{sub_id}",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _run_search(cb: CallbackQuery, sub_id: int) -> None:
+async def _run_search(cb: CallbackQuery, sub_id: int, offset: int) -> None:
     sub = await get_subscription(sub_id)
     if sub is None:
         await cb.answer("Подписка не найдена", show_alert=True)
@@ -117,7 +115,7 @@ async def _run_search(cb: CallbackQuery, sub_id: int) -> None:
 
     if cb.message is not None:
         try:
-            await cb.message.edit_text("🔍 <b>Ищу все объявления на av.by…</b>")
+            await cb.message.edit_text("🔍 <b>Ищу на av.by…</b>")
         except TelegramBadRequest:
             pass
 
@@ -140,69 +138,63 @@ async def _run_search(cb: CallbackQuery, sub_id: int) -> None:
         criteria["query"] = q or None
 
     try:
-        results = await search(criteria, limit=MAX_RESULTS)
+        all_results = await search(criteria, limit=MAX_RESULTS)
     except Exception as e:
         if cb.message is not None:
             try:
                 await cb.message.edit_text(
                     f"❌ Ошибка поиска: {_escape(str(e))}",
-                    reply_markup=_build_kb(sub_id),
+                    reply_markup=_build_kb(sub_id, 1, 0, 0, False),
                 )
             except TelegramBadRequest:
                 pass
         return
 
-    if not results:
+    if not all_results:
         txt = "😔 <b>Ничего не найдено.</b>\n\n"
         if not brand_id:
             txt += "💡 Марка вручную — попробуй ✏️ Марка из списка."
         if cb.message is not None:
             try:
-                await cb.message.edit_text(txt, reply_markup=_build_kb(sub_id))
+                await cb.message.edit_text(txt, reply_markup=_build_kb(sub_id, 1, 0, 0, False))
             except TelegramBadRequest:
                 pass
         return
 
+    total = len(all_results)
+    page_items = all_results[offset:offset + PAGE_SIZE]
+    if not page_items:
+        await cb.answer("Больше нет", show_alert=False)
+        return
+
+    # медиана по ВСЕМ (не по странице) — стабильна между страницами
+    prices = [r["price"] for r in all_results if r.get("price")]
+    median = statistics.median(prices) if prices else None
+
+    page = offset // PAGE_SIZE + 1
+    has_more = (offset + PAGE_SIZE) < total
+    header = _build_header(sub, page_items, total, offset, page, median)
+    body = _build_body(page_items, median)
+    text = header + "\n\n" + body
+
+    # если вдруг влезли за 4096 — режем body на 2 части безопасно
+    if len(text) > 4000:
+        text = text[:3990] + "…\n\n<i>(сообщение усечено, жми «Ещё»)</i>"
+
     try:
-        await mark_checked(sub_id, [r["id"] for r in results])
+        await mark_checked(sub_id, [r["id"] for r in page_items])
     except Exception:
         pass
 
-    prices = [r["price"] for r in results if r.get("price")]
-    median = statistics.median(prices) if prices else None
-
-    header = _build_header(sub, len(results), median)
-    chunks = _split_into_chunks(header, results, median)
-
     if cb.message is not None:
-        # первое сообщение — редактируем старое, остальные — send_message
         try:
             await cb.message.edit_text(
-                chunks[0],
-                reply_markup=_build_kb(sub_id) if len(chunks) == 1 else None,
+                text,
+                reply_markup=_build_kb(sub_id, page, offset, total, has_more),
                 disable_web_page_preview=True,
             )
         except TelegramBadRequest:
             pass
-        for i, chunk in enumerate(chunks[1:], start=2):
-            is_last = i == len(chunks)
-            try:
-                await cb.message.answer(
-                    chunk,
-                    reply_markup=_build_kb(sub_id) if is_last else None,
-                    disable_web_page_preview=True,
-                )
-            except TelegramBadRequest:
-                pass
-        if len(chunks) > 1:
-            try:
-                await cb.message.answer(
-                    f"<i>Показано {len(results)} из {len(results)} · "
-                    f"разбито на {len(chunks)} сообщений.</i>",
-                    reply_markup=_build_kb(sub_id),
-                )
-            except TelegramBadRequest:
-                pass
 
 
 @router.callback_query(F.data.startswith("subs:find:"))
@@ -212,5 +204,11 @@ async def on_find(cb: CallbackQuery) -> None:
         await cb.answer()
         return
     sub_id = int(parts[2])
+    offset = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 0
     await cb.answer("🔍 Ищу...")
-    await _run_search(cb, sub_id)
+    await _run_search(cb, sub_id, offset)
+
+
+@router.callback_query(F.data == "subs:noop")
+async def on_noop(cb: CallbackQuery) -> None:
+    await cb.answer("Это все объявления")
