@@ -23,6 +23,14 @@ PER_PAGE = 8
 
 # ---------- Рендеры ----------
 
+def _manual_btn(field: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text="✏️ Ввести вручную", callback_data=f"cs:manual:{field}")
+
+
+def _cancel_btn() -> InlineKeyboardButton:
+    return InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel")
+
+
 def render_brands(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     start = page * PER_PAGE
     end = start + PER_PAGE
@@ -40,7 +48,8 @@ def render_brands(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
         nav.append(InlineKeyboardButton(text="▶", callback_data=f"cs:bp:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel")])
+    rows.append([_manual_btn("brand")])
+    rows.append([_cancel_btn()])
     return f"🚗 <b>Выбери марку</b> (стр. {page + 1})", InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -65,8 +74,9 @@ def render_models(brand_idx: int, page: int = 0) -> tuple[str, InlineKeyboardMar
         rows.append(nav)
     rows.append([
         InlineKeyboardButton(text="Пропустить", callback_data="cs:skip:model"),
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel"),
+        _manual_btn("model"),
     ])
+    rows.append([_cancel_btn()])
     return f"🚗 <b>{brand}</b> — выбери модель", InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -80,8 +90,9 @@ def render_years(field: str, min_year: int | None = None) -> tuple[str, InlineKe
         ])
     rows.append([
         InlineKeyboardButton(text="Пропустить", callback_data=f"cs:skip:{field}"),
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel"),
+        _manual_btn(field),
     ])
+    rows.append([_cancel_btn()])
     title = "📅 <b>Год ОТ</b>" if field == "yf" else "📅 <b>Год ДО</b>"
     return title, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -99,8 +110,9 @@ def render_prices(field: str, min_price: int | None = None) -> tuple[str, Inline
         ])
     rows.append([
         InlineKeyboardButton(text="Пропустить", callback_data=f"cs:skip:{field}"),
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel"),
+        _manual_btn(field),
     ])
+    rows.append([_cancel_btn()])
     title = "💰 <b>Цена ОТ, USD</b>" if field == "pf" else "💰 <b>Цена ДО, USD</b>"
     return title, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -272,6 +284,143 @@ async def on_skip_pd(cb: CallbackQuery, state: FSMContext) -> None:
     d = await state.get_data()
     text, kb = render_preview(d)
     await safe_edit(cb, text, kb)
+
+
+# ---------- Ручной ввод: кнопки ----------
+
+@router.callback_query(F.data.startswith("cs:manual:"))
+async def on_manual(cb: CallbackQuery, state: FSMContext) -> None:
+    field = cb.data.split(":")[2]
+    mapping = {
+        "brand": CreateSubscription.manual_brand,
+        "model": CreateSubscription.manual_model,
+        "yf": CreateSubscription.manual_year_from,
+        "yd": CreateSubscription.manual_year_to,
+        "pf": CreateSubscription.manual_price_from,
+        "pd": CreateSubscription.manual_price_to,
+    }
+    st = mapping.get(field)
+    if st is None:
+        await cb.answer()
+        return
+    await state.set_state(st)
+    prompts = {
+        "brand": "Введи марку (например: BMW, Geely, Lada)",
+        "model": "Введи модель (например: X5, Coolray, Vesta)",
+        "yf": "Введи год ОТ (число, например: 2015)",
+        "yd": "Введи год ДО (число, например: 2023)",
+        "pf": "Введи цену ОТ в USD (число, например: 10000)",
+        "pd": "Введи цену ДО в USD (число, например: 30000)",
+    }
+    if cb.message is not None:
+        try:
+            await cb.message.edit_text(prompts[field])
+        except TelegramBadRequest:
+            pass
+    await cb.answer()
+
+
+# ---------- Ручной ввод: приём текста ----------
+
+async def _manual_brand(message: Message, state: FSMContext) -> None:
+    txt = (message.text or "").strip()
+    if not txt:
+        return
+    await state.update_data(brand=txt, brand_idx=None)
+    await state.set_state(CreateSubscription.model)
+    # модели для ручной марки неизвестны — сразу год
+    await state.set_state(CreateSubscription.year_from)
+    text, kb = render_years("yf")
+    await message.answer(text, reply_markup=kb)
+
+
+async def _manual_model(message: Message, state: FSMContext) -> None:
+    txt = (message.text or "").strip()
+    if not txt:
+        return
+    await state.update_data(model=txt)
+    await state.set_state(CreateSubscription.year_from)
+    text, kb = render_years("yf")
+    await message.answer(text, reply_markup=kb)
+
+
+async def _manual_year_from(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    if not raw.isdigit() or not (1980 <= int(raw) <= 2026):
+        await message.answer("Нужен год от 1980 до 2026. Попробуй ещё раз.")
+        return
+    year = int(raw)
+    await state.update_data(year_from=year)
+    await state.set_state(CreateSubscription.year_to)
+    text, kb = render_years("yd", min_year=year)
+    await message.answer(text, reply_markup=kb)
+
+
+async def _manual_year_to(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    if not raw.isdigit() or not (1980 <= int(raw) <= 2026):
+        await message.answer("Нужен год от 1980 до 2026. Попробуй ещё раз.")
+        return
+    year = int(raw)
+    await state.update_data(year_to=year)
+    await state.set_state(CreateSubscription.price_from)
+    text, kb = render_prices("pf")
+    await message.answer(text, reply_markup=kb)
+
+
+async def _manual_price_from(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip().replace(" ", "")
+    if not raw.isdigit():
+        await message.answer("Нужно число (USD). Попробуй ещё раз.")
+        return
+    price = int(raw)
+    await state.update_data(price_from=price if price > 0 else None)
+    await state.set_state(CreateSubscription.price_to)
+    text, kb = render_prices("pd", min_price=price)
+    await message.answer(text, reply_markup=kb)
+
+
+async def _manual_price_to(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip().replace(" ", "")
+    if not raw.isdigit():
+        await message.answer("Нужно число (USD). Попробуй ещё раз.")
+        return
+    price = int(raw)
+    await state.update_data(price_to=price if price > 0 else None)
+    await state.set_state(CreateSubscription.confirm)
+    d = await state.get_data()
+    text, kb = render_preview(d)
+    await message.answer(text, reply_markup=kb)
+
+
+@router.message(CreateSubscription.manual_brand, F.text)
+async def on_manual_brand(message: Message, state: FSMContext) -> None:
+    await _manual_brand(message, state)
+
+
+@router.message(CreateSubscription.manual_model, F.text)
+async def on_manual_model(message: Message, state: FSMContext) -> None:
+    await _manual_model(message, state)
+
+
+@router.message(CreateSubscription.manual_year_from, F.text)
+async def on_manual_year_from(message: Message, state: FSMContext) -> None:
+    await _manual_year_from(message, state)
+
+
+@router.message(CreateSubscription.manual_year_to, F.text)
+async def on_manual_year_to(message: Message, state: FSMContext) -> None:
+    await _manual_year_to(message, state)
+
+
+@router.message(CreateSubscription.manual_price_from, F.text)
+async def on_manual_price_from(message: Message, state: FSMContext) -> None:
+    await _manual_price_from(message, state)
+
+
+@router.message(CreateSubscription.manual_price_to, F.text)
+async def on_manual_price_to(message: Message, state: FSMContext) -> None:
+    await _manual_price_to(message, state)
 
 
 # ---------- Создать / Отмена ----------
