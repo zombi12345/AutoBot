@@ -14,11 +14,16 @@ router = Router(name="subs_find")
 
 PAGE_SIZE = 15
 
+LEGEND = (
+    "💚 ниже рынка на 30%+ · 🟢 ниже на 10%+ · ⚪ рынок (±10%) · "
+    "🟠 выше на 10%+ · 🔴 выше на 30%+"
+)
 
-def _fmt_price(p) -> str:
-    if not p:
+
+def _fmt(price: int | None, currency: str = "BYN") -> str:
+    if not price:
         return "—"
-    return f"${p:,}".replace(",", " ")
+    return f"{price:,}".replace(",", " ") + f" {currency}"
 
 
 def _price_badge(price: int | None, median: float | None) -> str:
@@ -26,14 +31,14 @@ def _price_badge(price: int | None, median: float | None) -> str:
         return "⚪"
     ratio = price / median
     if ratio <= 0.7:
-        return "💚"  # сильно ниже рынка
+        return "💚"
     if ratio <= 0.9:
-        return "🟢"  # ниже рынка
+        return "🟢"
     if ratio <= 1.1:
-        return "⚪"  # рынок
+        return "⚪"
     if ratio <= 1.3:
-        return "🟠"  # выше рынка
-    return "🔴"  # сильно выше
+        return "🟠"
+    return "🔴"
 
 
 def _escape(s: str) -> str:
@@ -41,7 +46,7 @@ def _escape(s: str) -> str:
 
 
 def _build_message(sub, results: list[dict], page: int, has_more: bool) -> str:
-    prices = [r["price_usd"] for r in results if r.get("price_usd") and r["price_usd"] > 0]
+    prices = [r["price"] for r in results if r.get("price") and r["price"] > 0]
     median = statistics.median(prices) if prices else None
 
     crit: list[str] = []
@@ -52,23 +57,22 @@ def _build_message(sub, results: list[dict], page: int, has_more: bool) -> str:
     if sub.year_from or sub.year_to:
         crit.append(f"{sub.year_from or '...'}–{sub.year_to or '...'}")
     if sub.price_from or sub.price_to:
-        crit.append(f"${sub.price_from or '...'}–${sub.price_to or '...'}")
+        crit.append(f"${sub.price_from or '...'}–${sub.price_to or '...'} (фильтр)")
 
     lines = [
         f"🔍 <b>Стр. {page}</b> · {len(results)} объявлений",
         f"Критерии: <i>{_escape(' '.join(crit)) or '—'}</i>",
     ]
     if median:
-        lines.append(f"Медиана: <b>{_fmt_price(int(median))}</b> (💚 ниже · 🔴 выше)")
-    lines.append("")
+        lines.append(f"Медиана: <b>{_fmt(int(median))}</b>")
+    lines += [f"<i>{LEGEND}</i>", ""]
 
     for r in results:
-        badge = _price_badge(r.get("price_usd"), median)
+        badge = _price_badge(r.get("price"), median)
         title = _escape(r["title"])
-        price = _fmt_price(r.get("price_usd"))
+        price = _fmt(r.get("price"), r.get("currency", "BYN"))
         year = r.get("year") or "—"
-        head = f"{badge} <b>{price}</b> · {title} · {year}"
-        lines.append(head)
+        lines.append(f"{badge} <b>{price}</b> · {title} · {year}")
         params = (r.get("params") or "").strip()
         if params and params != str(year):
             lines.append(f"   <i>{_escape(params)}</i>")

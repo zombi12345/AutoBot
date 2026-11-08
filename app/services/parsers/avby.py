@@ -147,9 +147,18 @@ def _parse_api(data: dict, limit: int) -> list[dict]:
             ad_id = ad.get("id")
             title = ad.get("title") or ad.get("name") or "—"
             year = ad.get("year")
-            price_usd = None
+            price_byn = None
+            currency = "BYN"
             if isinstance(ad.get("price"), dict):
-                price_usd = (ad["price"].get("usd") or {}).get("amount")
+                p_usd = (ad["price"].get("usd") or {}).get("amount")
+                p_byn = (ad["price"].get("byn") or {}).get("amount")
+                if p_byn:
+                    price_byn = p_byn
+                    currency = "BYN"
+                elif p_usd:
+                    # API отдал USD, конвертируем "наоборот" в BYN для консистентности
+                    price_byn = int(p_usd * 3.27)
+                    currency = "USD"
             url = ad.get("publicUrl") or ad.get("url")
             if not url and ad_id:
                 url = f"https://cars.av.by/{ad_id}"
@@ -159,7 +168,8 @@ def _parse_api(data: dict, limit: int) -> list[dict]:
                 "id": str(ad_id) if ad_id else url,
                 "title": str(title),
                 "year": year,
-                "price_usd": price_usd,
+                "price": price_byn,
+                "currency": currency,
                 "url": url,
                 "params": "",
             })
@@ -223,18 +233,24 @@ def _parse_html(html: str, limit: int) -> list[dict]:
                 if m:
                     year = int(m.group(0))
 
-            # price — перебор селекторов
-            price_usd = None
+            # price — BYN (на av.by цены в BYN). Currency определяем по тексту.
+            price_byn = None
+            currency = "BYN"
             for sel in _PRICE_SELECTORS:
                 el = card.select_one(sel)
                 if not el:
                     continue
                 text = el.get_text(" ", strip=True)
-                # иногда цена USD в $ или "USD", иногда в BYN — берём число
+                if not text:
+                    continue
+                if "usd" in text.lower() or "$" in text:
+                    currency = "USD"
+                elif "byn" in text.lower() or "р." in text.lower():
+                    currency = "BYN"
                 digits = re.sub(r"[^\d]", "", text)
                 if digits and len(digits) >= 3:
                     try:
-                        price_usd = int(digits)
+                        price_byn = int(digits)
                         break
                     except ValueError:
                         continue
@@ -244,7 +260,8 @@ def _parse_html(html: str, limit: int) -> list[dict]:
                 "id": ad_id,
                 "title": title,
                 "year": year,
-                "price_usd": price_usd,
+                "price": price_byn,
+                "currency": currency,
                 "url": url,
                 "params": params_text,
             })
