@@ -7,8 +7,12 @@ from aiohttp import web
 from app.bot import create_bot, create_dispatcher
 from app.config import settings
 from app.db import init_db
+from sqlalchemy import func, select
+from app.db.base import async_session_maker
+from app.db.models import SearchSubscription
+from app.db.models.subscription import SubscriptionStatus
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 log = logging.getLogger("bot")
 
 
@@ -31,10 +35,34 @@ async def handle_version(request: web.Request) -> web.Response:
     )
 
 
+async def handle_admin_stats(request: web.Request) -> web.Response:
+    try:
+        async with async_session_maker() as s:
+            total = (await s.execute(select(func.count(SearchSubscription.id)))).scalar() or 0
+            active = (await s.execute(
+                select(func.count(SearchSubscription.id)).where(
+                    SearchSubscription.status == SubscriptionStatus.ACTIVE
+                )
+            )).scalar() or 0
+            seen_total = 0
+            rows = (await s.execute(select(SearchSubscription.seen_listing_ids))).scalars().all()
+            for r in rows:
+                seen_total += len(r or [])
+        return web.json_response({
+            "subs_total": int(total),
+            "subs_active": int(active),
+            "subs_paused": int(total) - int(active),
+            "seen_total": int(seen_total),
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def start_web_server() -> web.AppRunner:
     web_app = web.Application()
     web_app.router.add_get("/health", handle_health)
     web_app.router.add_get("/version", handle_version)
+    web_app.router.add_get("/admin/stats", handle_admin_stats)
     runner = web.AppRunner(web_app)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=settings.port)
@@ -55,9 +83,44 @@ async def main() -> None:
     await init_db()
     log.info("db ready: %s", settings.database_url)
 
+    scheduler = None
+    if settings.worker_enabled:
+        try:
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from worker.jobs import run_once as worker_run_once
+            scheduler = AsyncIOScheduler(timezone="UTC")
+            scheduler.add_job(
+                worker_run_once,
+                trigger="interval",
+                seconds=max(60, settings.check_interval_seconds),
+                args=[None],  # будет заменено ниже на bot после create_bot
+                id="inline_worker",
+                next_run_time=None,
+            )
+            scheduler.start()
+            log.info("inline worker started, interval=%ss", settings.check_interval_seconds)
+        except Exception as e:
+            log.exception("inline worker start fail: %s", e)
+            scheduler = None
+
     runner = await start_web_server()
     bot = create_bot()
     dp = create_dispatcher()
+
+    if scheduler is not None:
+        try:
+            from worker.jobs import run_once as worker_run_once
+            scheduler.remove_job("inline_worker")
+            scheduler.add_job(
+                worker_run_once,
+                trigger="interval",
+                seconds=max(60, settings.check_interval_seconds),
+                args=[bot],
+                id="inline_worker",
+                next_run_time=None,
+            )
+        except Exception:
+            pass
 
     try:
         log.info("bot polling start, version=%s commit=%s", VERSION, git_commit())
@@ -66,6 +129,11 @@ async def main() -> None:
         log.info("bot shutting down")
         await bot.session.close()
         await runner.cleanup()
+        if scheduler is not None:
+            try:
+                scheduler.shutdown(wait=False)
+            except Exception:
+                pass
 
 
 import sys

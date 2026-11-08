@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     port: int = 10000
     check_interval_seconds: int = 600
     max_notifications_per_run: int = 20
+    worker_enabled: bool = False
 
     @field_validator("admin_ids", mode="before")
     @classmethod

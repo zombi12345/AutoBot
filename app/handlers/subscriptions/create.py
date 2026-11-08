@@ -527,6 +527,32 @@ async def on_done(cb: CallbackQuery, state: FSMContext) -> None:
         price_to=d.get("price_to"),
     )
     await state.clear()
+
+    # pre-seed seen: сразу запомним существующие объявления, чтобы не спамить старыми
+    try:
+        from app.data.cars_full import BRAND_IDS, MODEL_IDS
+        from app.services.parsers.avby import search
+        from app.db.repositories.subscriptions import update_subscription
+
+        brand_id = BRAND_IDS.get(sub.brand) if sub.brand else None
+        model_id = None
+        if brand_id and sub.model:
+            model_id = (MODEL_IDS.get(sub.brand) or {}).get(sub.model)
+        crit = {
+            "brand_id": brand_id,
+            "model_id": model_id,
+            "year_from": sub.year_from,
+            "year_to": sub.year_to,
+            "price_from": sub.price_from,
+            "price_to": sub.price_to,
+            "query": None if brand_id else (f"{sub.brand or ''} {sub.model or ''}".strip() or None),
+        }
+        seed = await search(crit, limit=100)
+        if seed:
+            await update_subscription(sub.id, seen_listing_ids=[r["id"] for r in seed])
+    except Exception:
+        pass
+
     await cb.message.edit_text(f"✅ Подписка #{sub.id} создана.")
     await cb.message.answer("Смотри в 📋 Мои подписки.", reply_markup=main_menu_kb())
     await cb.answer()
