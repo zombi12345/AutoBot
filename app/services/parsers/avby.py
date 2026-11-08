@@ -24,14 +24,15 @@ API_ENDPOINTS = (
     "{api}/offers/cars/search?page=1&per_page={n}",
 )
 
-DEFAULT_LIMIT = 15
+MAX_TOTAL = 100
+MAX_PAGES = 5
 
 
-async def search(criteria: dict[str, Any], limit: int = DEFAULT_LIMIT, page: int = 1) -> list[dict]:
-    """Ищет объявления на av.by. page — номер страницы (1-based)."""
+async def search(criteria: dict[str, Any], limit: int = MAX_TOTAL) -> list[dict]:
+    """Ищет объявления на av.by. Собирает с нескольких страниц HTML."""
     body = _build_body(criteria)
 
-    # 1) API (может быть 404 — не критично, идём в HTML)
+    # 1) API (может 404 — ок)
     for tmpl in API_ENDPOINTS:
         url = tmpl.format(api=AVBY_API, n=limit)
         data = await _post_api(url, body)
@@ -41,17 +42,35 @@ async def search(criteria: dict[str, Any], limit: int = DEFAULT_LIMIT, page: int
                 log.info("avby: API OK, %d results", len(results))
                 return results
 
-    # 2) HTML fallback
-    html_url = _build_html_url(criteria, page=page)
-    html = await _get_html(html_url)
-    if html:
-        results = _parse_html(html, limit)
-        if results:
-            log.info("avby: HTML fallback OK, page=%s, %d results", page, len(results))
-            return results
+    # 2) HTML: обход страниц
+    out: list[dict] = []
+    seen_ids: set[str] = set()
+    pages_tried = 0
+    async with AsyncSession(impersonate="chrome124", headers=HEADERS, timeout=25) as s:
+        for page in range(1, MAX_PAGES + 1):
+            if len(out) >= limit:
+                break
+            html_url = _build_html_url(criteria, page=page)
+            html = await _get_html(s, html_url)
+            if not html:
+                break
+            pages_tried += 1
+            page_items = _parse_html(html, limit - len(out))
+            if not page_items:
+                break
+            new_items = [r for r in page_items if r["id"] not in seen_ids]
+            if not new_items:
+                break
+            for r in new_items:
+                seen_ids.add(r["id"])
+                out.append(r)
+            log.info("avby: page %s → %d new (total %d)", page, len(new_items), len(out))
 
-    log.info("avby: no results for %s (page=%s)", body, page)
-    return []
+    if out:
+        log.info("avby: HTML fallback OK, %d results from %d pages", len(out), pages_tried)
+    else:
+        log.info("avby: no results for %s", body)
+    return out
 
 
 def _build_body(criteria: dict) -> dict[str, Any]:
@@ -105,26 +124,23 @@ async def _post_api(url: str, body: dict) -> dict | None:
         async with AsyncSession(impersonate="chrome124", headers=HEADERS, timeout=20) as s:
             r = await s.post(url, json=body)
             if r.status_code != 200:
-                log.debug("avby API %s: %s", r.status_code, url)
                 return None
             try:
                 return r.json()
-            except Exception as e:
-                log.warning("avby API json fail: %s", e)
+            except Exception:
                 return None
     except Exception as e:
         log.warning("avby API curl_cffi fail: %s", e)
         return None
 
 
-async def _get_html(url: str) -> str | None:
+async def _get_html(session: AsyncSession, url: str) -> str | None:
     try:
-        async with AsyncSession(impersonate="chrome124", headers=HEADERS, timeout=20) as s:
-            r = await s.get(url)
-            if r.status_code != 200:
-                log.warning("avby HTML %s: %s", r.status_code, url)
-                return None
-            return r.text
+        r = await session.get(url)
+        if r.status_code != 200:
+            log.warning("avby HTML %s: %s", r.status_code, url)
+            return None
+        return r.text
     except Exception as e:
         log.warning("avby HTML curl_cffi fail: %s", e)
         return None
@@ -133,10 +149,8 @@ async def _get_html(url: str) -> str | None:
 def _parse_api(data: dict, limit: int) -> list[dict]:
     if not isinstance(data, dict):
         return []
-    items = (
-        data.get("adverts") or data.get("offers")
-        or data.get("items") or data.get("results") or []
-    )
+    items = (data.get("adverts") or data.get("offers")
+             or data.get("items") or data.get("results") or [])
     if not isinstance(items, list):
         return []
     out: list[dict] = []
@@ -154,9 +168,7 @@ def _parse_api(data: dict, limit: int) -> list[dict]:
                 p_byn = (ad["price"].get("byn") or {}).get("amount")
                 if p_byn:
                     price_byn = p_byn
-                    currency = "BYN"
                 elif p_usd:
-                    # API отдал USD, конвертируем "наоборот" в BYN для консистентности
                     price_byn = int(p_usd * 3.27)
                     currency = "USD"
             url = ad.get("publicUrl") or ad.get("url")
@@ -212,18 +224,15 @@ def _parse_html(html: str, limit: int) -> list[dict]:
             if not url.startswith("http"):
                 continue
 
-            # title
             title = "—"
             for sel in _TITLE_SELECTORS:
                 el = card.select_one(sel)
                 if el:
-                    t = el.get_text(" ", strip=True)
-                    t = re.sub(r"\s+", " ", t).strip()
+                    t = re.sub(r"\s+", " ", el.get_text(" ", strip=True)).strip()
                     if t:
                         title = t
                         break
 
-            # year + params (двигатель, КПП, пробег)
             year = None
             params_text = ""
             params_el = card.select_one(".listing-item__params")
@@ -233,7 +242,6 @@ def _parse_html(html: str, limit: int) -> list[dict]:
                 if m:
                     year = int(m.group(0))
 
-            # price — BYN (на av.by цены в BYN). Currency определяем по тексту.
             price_byn = None
             currency = "BYN"
             for sel in _PRICE_SELECTORS:
@@ -243,10 +251,9 @@ def _parse_html(html: str, limit: int) -> list[dict]:
                 text = el.get_text(" ", strip=True)
                 if not text:
                     continue
-                if "usd" in text.lower() or "$" in text:
+                low = text.lower()
+                if "usd" in low or "$" in text:
                     currency = "USD"
-                elif "byn" in text.lower() or "р." in text.lower():
-                    currency = "BYN"
                 digits = re.sub(r"[^\d]", "", text)
                 if digits and len(digits) >= 3:
                     try:
