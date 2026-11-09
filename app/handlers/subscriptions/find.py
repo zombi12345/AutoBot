@@ -169,7 +169,7 @@ async def _run_search(cb, sub_id, offset):
     page = offset // PAGE_SIZE + 1
     has_more = (offset + PAGE_SIZE) < total
     header = _build_header(sub, page_items, total, offset, page, median)
-    body = _build_body(page_items, median)
+    body = _build_body(page_items, median, all_results)
     text = header + "\n\n" + body
 
     if len(text) > 4000:

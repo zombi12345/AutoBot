@@ -13,7 +13,7 @@ from app.db.models import SearchSubscription
 from app.db.models.subscription import SubscriptionStatus
 from app.db.repositories.worker_stats import get_stats as get_worker_stats
 
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 log = logging.getLogger("bot")
 
 

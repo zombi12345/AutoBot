@@ -30,13 +30,34 @@ def _badge(price: int | None, median: float | None) -> str:
     return "🔴"
 
 
+def _median_for_year(year: int | None, all_items: list[dict]) -> float | None:
+    """Медиана по объявлениям в окне ±1 год от target, иначе ±2, иначе все."""
+    if not year:
+        prices = [r["price"] for r in all_items if r.get("price")]
+        return statistics.median(prices) if prices else None
+
+    with_year = [r for r in all_items if r.get("year") and r.get("price")]
+    if not with_year:
+        prices = [r["price"] for r in all_items if r.get("price")]
+        return statistics.median(prices) if prices else None
+
+    for delta in (1, 2, 3):
+        group = [r["price"] for r in with_year if abs(int(r["year"]) - int(year)) <= delta]
+        if len(group) >= 3:
+            return statistics.median(group)
+
+    # fallback: все цены
+    all_prices = [r["price"] for r in all_items if r.get("price")]
+    return statistics.median(all_prices) if all_prices else None
+
+
 def _escape(s: str) -> str:
     return (s or "").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def build_message(sub, new_items: list[dict], all_items: list[dict]) -> str:
-    prices = [r["price"] for r in all_items if r.get("price")]
-    median = statistics.median(prices) if prices else None
+    overall_prices = [r["price"] for r in all_items if r.get("price")]
+    overall_median = statistics.median(overall_prices) if overall_prices else None
 
     crit = []
     if sub.brand:
@@ -52,12 +73,13 @@ def build_message(sub, new_items: list[dict], all_items: list[dict]) -> str:
         f"🔔 <b>Новые объявления по подписке #{sub.id}</b>",
         f"<i>{_escape(' '.join(crit)) or '—'}</i>",
     ]
-    if median:
-        lines.append(f"Медиана: <b>{_fmt(int(median))}</b>")
+    if overall_median:
+        lines.append(f"Медиана (все годы): <b>{_fmt(int(overall_median))}</b>")
     lines.append("")
 
     for r in new_items:
-        b = _badge(r.get("price"), median)
+        y_median = _median_for_year(r.get("year"), all_items)
+        b = _badge(r.get("price"), y_median)
         title = _escape(r["title"])
         price = _fmt(r.get("price"), r.get("currency", "BYN"))
         year = r.get("year") or "—"

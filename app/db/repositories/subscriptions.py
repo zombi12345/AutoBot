@@ -108,7 +108,7 @@ async def get_subscription(sub_id: int) -> SearchSubscription | None:
 
 
 async def update_subscription(sub_id: int, **fields) -> bool:
-    allowed = {"brand", "model", "year_from", "year_to", "price_from", "price_to", "status", "source", "extra"}
+    allowed = {"brand", "model", "year_from", "year_to", "price_from", "price_to", "status", "source", "extra", "seen_listing_ids", "last_checked_at"}
     async with async_session_maker() as s:
         sub = await s.get(SearchSubscription, sub_id)
         if sub is None:
