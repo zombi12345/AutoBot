@@ -13,8 +13,10 @@ from app.db.models import SearchSubscription
 from app.db.models.subscription import SubscriptionStatus
 from app.db.repositories.worker_stats import get_stats as get_worker_stats
 
-VERSION = "0.10.1"
+VERSION = "0.10.2"
 log = logging.getLogger("bot")
+
+_BOT_INSTANCE = None
 
 
 def git_commit() -> str:
@@ -65,7 +67,7 @@ async def handle_admin_stats(request: web.Request) -> web.Response:
 async def handle_admin_run_worker(request: web.Request) -> web.Response:
     try:
         from worker.jobs import run_once as worker_run_once
-        bot = request.app.get("bot")
+        bot = _BOT_INSTANCE
         if bot is None:
             return web.json_response({"error": "bot not attached"}, status=500)
         stats = await worker_run_once(bot)
@@ -77,7 +79,7 @@ async def handle_admin_run_worker(request: web.Request) -> web.Response:
 async def handle_admin_run_worker(request: web.Request) -> web.Response:
     try:
         from worker.jobs import run_once as worker_run_once
-        bot = request.app.get("bot")
+        bot = _BOT_INSTANCE
         if bot is None:
             return web.json_response({"error": "bot not attached"}, status=500)
         stats = await worker_run_once(bot)
@@ -134,14 +136,9 @@ async def main() -> None:
 
     runner = await start_web_server()
     bot = create_bot()
-    # attach bot to aiohttp app для /admin/run_worker
-    try:
-        runner.addresses  # noqa
-        for app_obj in [runner._app]:  # type: ignore[attr-defined]
-            if app_obj is not None:
-                app_obj["bot"] = bot
-    except Exception:
-        pass
+    # сохранить bot в module-level для /admin/run_worker
+    global _BOT_INSTANCE
+    _BOT_INSTANCE = bot
     dp = create_dispatcher()
 
     if scheduler is not None:

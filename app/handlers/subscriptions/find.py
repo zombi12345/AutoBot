@@ -46,14 +46,15 @@ def _escape(s):
     return (s or "").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _render_item(r, median):
-    badge = _price_badge(r.get("price"), median)
+def _render_item(r: dict, median: float | None, all_items: list[dict] | None = None) -> str:
+    y_median = _median_for_year(r.get("year"), all_items) if all_items else median
+    badge = _price_badge(r.get("price"), y_median)
     title = _escape(r["title"])
     price = _fmt(r.get("price"), r.get("currency", "BYN"))
-    year = r.get("year") or "-"
+    year = r.get("year") or "—"
     params = (r.get("params") or "").strip()
 
-    lines = [f"{badge} <b>{price}</b> | {title} | {year}"]
+    lines = [f"{badge} <b>{price}</b> · {title} · {year}"]
     if params and params != str(year):
         lines.append(f"<i>{_escape(params)}</i>")
     lines.append(f'<a href="{r["url"]}">→ Открыть на av.by</a>')
@@ -80,10 +81,9 @@ def _build_header(sub, page_items, total, offset, page, median):
     return "\n".join(lines)
 
 
-def _build_body(items, median):
+def _build_body(items: list[dict], median: float | None, all_items: list[dict] | None = None) -> str:
     SEP = "\n\n"
-    return SEP.join(_render_item(r, median) for r in items)
-
+    return SEP.join(_render_item(r, median, all_items) for r in items)
 
 def _build_kb(sub_id, page, offset, total, has_more):
     rows = []
