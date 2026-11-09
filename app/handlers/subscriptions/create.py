@@ -603,7 +603,10 @@ async def on_search_once(cb: CallbackQuery, state: FSMContext) -> None:
     await get_or_create_user(u.id, username=u.username, first_name=u.first_name)
 
     from app.data.cars_full import BRAND_IDS, MODEL_IDS
-    from app.services.parsers.avby import search as avby_search
+    from app.services.parsers import search as source_search
+
+    src = d.get("source") or "avby"
+    src_label = "Av.by" if src == "avby" else "Kufar"
 
     brand = d.get("brand")
     model = d.get("model")
@@ -615,6 +618,8 @@ async def on_search_once(cb: CallbackQuery, state: FSMContext) -> None:
     criteria = {
         "brand_id": brand_id,
         "model_id": model_id,
+        "brand": brand,          # для kufar_html
+        "model": model,
         "year_from": d.get("year_from"),
         "year_to": d.get("year_to"),
         "price_from": d.get("price_from"),
@@ -622,9 +627,9 @@ async def on_search_once(cb: CallbackQuery, state: FSMContext) -> None:
         "query": None if brand_id else (f"{brand or ''} {model or ''}".strip() or None),
     }
     await state.clear()
-    await cb.message.edit_text("🔍 Ищу на av.by…")
+    await cb.message.edit_text(f"🔍 Ищу на {src_label}…")
     try:
-        results = await avby_search(criteria, limit=100)
+        results = await source_search(src, criteria, limit=100)
     except Exception as e:
         await cb.message.edit_text(f"❌ Ошибка поиска: {e}")
         await cb.answer()
