@@ -98,7 +98,7 @@ def _render_item(r, all_items):
     return "\n".join(lines)
 
 
-def _build_header(sub, page_items, total, offset, page, all_items, parsed=None):
+def _build_header(sub, page_items, total, offset, page, all_items, parsed: dict | None = None):
     crit = []
     if sub is not None:
         if sub.brand:
@@ -240,7 +240,7 @@ async def _run_search(cb, sub_id, offset):
 
     page = offset // PAGE_SIZE + 1
     has_more = (offset + PAGE_SIZE) < total
-    header = _build_header(sub, page_items, total, offset, page, all_results, parsed=parsed_or_d if isinstance(parsed_or_d, dict) else None)
+    header = _build_header(sub, page_items, total, offset, page, all_results)
     body = _build_body(page_items, all_results)
     text = header + "\n\n" + body
     if len(text) > 4000:
