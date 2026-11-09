@@ -102,7 +102,37 @@ def _apply_postfilter(items: list[dict], criteria: dict) -> list[dict]:
     return out
 
 
+def _resolve_ids(criteria: dict) -> dict:
+    """Если brand/model пришли строками — ищем id через справочник."""
+    from app.data.cars_full import BRANDS, BRAND_IDS, MODEL_IDS
+    out = dict(criteria)
+    brand = out.get("brand")
+    if brand and not out.get("brand_id"):
+        if brand in BRAND_IDS:
+            out["brand_id"] = BRAND_IDS[brand]
+        else:
+            from app.utils.fuzzy import find_brand
+            canon, _ = find_brand(brand, list(BRAND_IDS.keys()))
+            if canon:
+                out["brand_id"] = BRAND_IDS[canon]
+                out["brand"] = canon
+    brand = out.get("brand")
+    model = out.get("model")
+    if model and not out.get("model_id") and brand and brand in MODEL_IDS:
+        mids = MODEL_IDS[brand]
+        if model in mids:
+            out["model_id"] = mids[model]
+        else:
+            from app.utils.fuzzy import find_model
+            canon, _ = find_model(model, list(mids.keys()))
+            if canon:
+                out["model_id"] = mids[canon]
+                out["model"] = canon
+    return out
+
+
 async def search(criteria: dict[str, Any], limit: int = MAX_TOTAL) -> list[dict]:
+    criteria = _resolve_ids(criteria)
     """Ищет объявления на av.by. Собирает с нескольких страниц HTML."""
     body = _build_body(criteria)
 
