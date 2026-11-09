@@ -245,11 +245,24 @@ async def _run_search(cb, sub_id, offset):
             pass
 
 
-async def _render_search_results(cb, all_results, parsed_or_d=None):
+async def _render_search_results(cb, all_results, parsed_or_d=None, sort_by_mileage=False):
     """Разовый поиск: без подписки. Сортировка по цвету."""
     if not all_results:
         return
-    all_results = _sort_by_value(all_results, all_results)
+    if sort_by_mileage:
+        import re as _re
+        def _mil(r):
+            params = r.get("params") or ""
+            m = _re.search(r"(\d[\d\s]{2,})\s*км", params)
+            if m:
+                try:
+                    return int(_re.sub(r"\D", "", m.group(1)))
+                except Exception:
+                    return 10**9
+            return 10**9
+        all_results = sorted(all_results, key=_mil)
+    else:
+        all_results = _sort_by_value(all_results, all_results)
     total = len(all_results)
     page_items = all_results[:PAGE_SIZE]
     fake_sub = None

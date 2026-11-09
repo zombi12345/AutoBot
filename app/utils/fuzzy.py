@@ -74,6 +74,7 @@ _SYNONYMS: dict[str, str] = {
     "москвич": "Москвич", "москвич 2141": "Москвич", "зубр": "Zubr",
 }
 
+
 # Популярные модели кириллицей / разговорные
 _MODEL_SYNONYMS: dict[str, str] = {
     "камри": "Camry",
@@ -99,6 +100,35 @@ _MODEL_SYNONYMS: dict[str, str] = {
     "круз": "Cruze", "авео": "Aveo", "лачетти": "Lacetti",
 }
 
+# ----- Расширение под av.by-модели с индексами (glk350 → GLK) -----
+_MODEL_SYNONYMS.update({
+    "glk": "GLK", "glk200": "GLK", "glk220": "GLK", "glk250": "GLK",
+    "glk300": "GLK", "glk350": "GLK",
+    "glc": "GLC", "glc200": "GLC", "glc220": "GLC", "glc250": "GLC",
+    "glc300": "GLC", "glc350": "GLC", "glc43": "GLC", "glc63": "GLC",
+    "gle": "GLE", "gle350": "GLE", "gle400": "GLE", "gle450": "GLE",
+    "ml": "M-Класс", "ml350": "M-Класс", "ml250": "M-Класс",
+    "gl": "GL-Класс", "gl350": "GL-Класс", "gl450": "GL-Класс",
+    "gla": "GLA", "gla200": "GLA", "gla250": "GLA",
+    "glb": "GLB", "glb200": "GLB", "glb250": "GLB",
+    "cls": "CLS", "cls350": "CLS", "cls550": "CLS",
+    "c200": "C-Класс", "c250": "C-Класс", "c300": "C-Класс", "c350": "C-Класс",
+    "e200": "E-Класс", "e220": "E-Класс", "e250": "E-Класс", "e300": "E-Класс", "e350": "E-Класс",
+    "s500": "S-Класс", "s600": "S-Класс",
+    "a200": "A-Класс", "a180": "A-Класс",
+    "b200": "B-Класс", "b180": "B-Класс",
+    "x-class": "X-класс", "x220": "X-класс", "x250": "X-класс",
+    "a4b8": "A4", "a4b7": "A4", "a6c6": "A6", "a6c7": "A6",
+    "e60": "5 серия", "e61": "5 серия", "f10": "5 серия", "g30": "5 серия",
+    "e90": "3 серия", "f30": "3 серия", "g20": "3 серия",
+    "e70": "X5", "f15": "X5", "g05": "X5",
+    "e71": "X6", "f16": "X6",
+    "e46": "3 серия", "e36": "3 серия",
+    "tiguan1": "Tiguan", "tiguan2": "Tiguan",
+    "rav4iv": "RAV4", "rav4v": "RAV4",
+    "camryv50": "Camry", "camryv70": "Camry",
+})
+
 
 # ----- Расширение под русские модели av.by (1 серия, 5 серия, iX) -----
 _MODEL_SYNONYMS.update({
@@ -117,10 +147,10 @@ _MODEL_SYNONYMS.update({
     "икс 6": "X6", "икс6": "X6", "икс-6": "X6",
     "икс 7": "X7", "икс7": "X7", "икс-7": "X7",
     # Mercedes
-    "с класс": "C-класс", "ц класс": "C-класс", "с-класс": "C-класс",
-    "е класс": "E-класс", "е-класс": "E-класс",
-    "а класс": "A-класс", "а-класс": "A-класс",
-    "s класс": "S-класс", "с-класс s": "S-класс",
+    "с класс": "C-Класс", "ц класс": "C-Класс", "с-класс": "C-Класс",
+    "е класс": "E-Класс", "е-класс": "E-Класс",
+    "а класс": "A-Класс", "а-класс": "A-Класс",
+    "s класс": "S-Класс", "с-класс s": "S-Класс",
     # Audi
     "а4": "A4", "а6": "A6", "а8": "A8", "а3": "A3", "а5": "A5", "а7": "A7",
     "ку 5": "Q5", "ку5": "Q5", "ку 7": "Q7", "ку7": "Q7", "ку 3": "Q3", "ку3": "Q3",
@@ -164,6 +194,17 @@ _MODEL_SYNONYMS.update({
     # Лада
     "веста": "Vesta", "гранта": "Granta", "нива": "Niva", "ларгус": "Largus",
 })
+
+
+def _normalize_model(s: str) -> str:
+    """Для моделей: убираем цифры в конце (glk350 -> glk, x5 -> x5 через visual)."""
+    n = normalize(s)
+    # убираем ТОЛЬКО если это не X5, M3, CX-5 и т.п. — короткие с цифрой
+    if len(n) > 4 and n[-1].isdigit():
+        # glk350 -> glk, rav4iv -> rav4iv (не трогаем)
+        import re as _re
+        n = _re.sub(r"\d+$", "", n)
+    return n
 
 
 def normalize(s: str) -> str:
@@ -227,14 +268,17 @@ def find_model(query: str, models: list[str], cutoff: float = 0.6) -> tuple[str 
         return syn, "fuzzy"
     # 2) по обоим ключам
     q_keys = _keys(query)
+    # 2b) усечённые цифры в конце
+    q_keys.add(_normalize_model(query))
     model_key_map: dict[str, str] = {}
     for m in models:
         for k in _keys(m):
             model_key_map[k] = m
+        model_key_map[_normalize_model(m)] = m
     for qk in q_keys:
         if qk in model_key_map:
             return model_key_map[qk], "exact"
-    # 3) difflib по обоим ключам
+    # 3) difflib
     for qk in q_keys:
         matches = difflib.get_close_matches(qk, list(model_key_map.keys()), n=1, cutoff=cutoff)
         if matches:
