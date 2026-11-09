@@ -234,30 +234,33 @@ async def ai_ok(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Искать сейчас", callback_data="ai:search")],
-        [InlineKeyboardButton(text="⏳ Сохранить как подписку", callback_data="ai:save")],
+        [InlineKeyboardButton(text="🇧🇾 Av.by — искать", callback_data="ai:search:avby"),
+         InlineKeyboardButton(text="🇧🇾 Kufar — искать", callback_data="ai:search:kufar")],
+        [InlineKeyboardButton(text="⏳ Av.by — подписка", callback_data="ai:save:avby"),
+         InlineKeyboardButton(text="⏳ Kufar — подписка", callback_data="ai:save:kufar")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="ai:cancel")],
     ])
     await cb.message.edit_text("Что сделать с критериями?", reply_markup=kb)
     await cb.answer()
 
 
-@router.callback_query(F.data == "ai:search")
+@router.callback_query(F.data.startswith("ai:search"))
 async def ai_search(cb: CallbackQuery, state: FSMContext) -> None:
     if cb.message is None or cb.from_user is None:
         await cb.answer()
         return
+    src = cb.data.split(":")[2] if len(cb.data.split(":")) >= 3 else "avby"
     d = await state.get_data()
     parsed = d.get("ai_parsed") or {}
     await state.clear()
 
-    from app.services.parsers.avby import search as avby_search
+    from app.services.parsers import search as source_search
     from app.handlers.subscriptions import find as find_mod
 
     criteria = _criteria_from_parsed(parsed)
     await cb.message.edit_text("🔍 Ищу на av.by…")
     try:
-        results = await avby_search(criteria, limit=100)
+        results = await source_search(src, criteria, limit=100)
     except Exception as e:
         await cb.message.edit_text(f"❌ Ошибка поиска: {e}")
         await cb.answer()
@@ -274,11 +277,12 @@ async def ai_search(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.callback_query(F.data == "ai:save")
+@router.callback_query(F.data.startswith("ai:save"))
 async def ai_save(cb: CallbackQuery, state: FSMContext) -> None:
     if cb.message is None or cb.from_user is None:
         await cb.answer()
         return
+    src = cb.data.split(":")[2] if len(cb.data.split(":")) >= 3 else "avby"
     d = await state.get_data()
     parsed = d.get("ai_parsed") or {}
     raw = d.get("ai_raw") or ""
@@ -297,7 +301,7 @@ async def ai_save(cb: CallbackQuery, state: FSMContext) -> None:
     user = await get_or_create_user(u.id, username=u.username, first_name=u.first_name)
     sub = await create_subscription(
         user_id=user.id,
-        source="avby",
+        source=src,
         brand=parsed.get("brand"),
         model=parsed.get("model"),
         year_from=parsed.get("year_from"),

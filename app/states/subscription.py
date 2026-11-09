@@ -2,6 +2,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class CreateSubscription(StatesGroup):
+    source = State()
     brand = State()
     model = State()
     year_from = State()

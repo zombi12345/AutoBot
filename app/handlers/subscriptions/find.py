@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.data.cars_full import BRAND_IDS, MODEL_IDS
 from app.db.repositories.subscriptions import get_subscription, mark_checked
-from app.services.parsers.avby import search
+from app.services.parsers import search as source_search
 
 router = Router(name="subs_find")
 
@@ -121,7 +121,9 @@ def _build_header(sub, page_items, total, offset, page, all_items):
 
     start = offset + 1
     end = offset + len(page_items)
-    lines = [f"🔍 <b>Найдено {total}</b> · стр. {page} ({start}–{end})"]
+    src = getattr(sub, "source", None) or "avby"
+    src_label = "🇧🇾 Av.by" if src == "avby" else "🇧🇾 Kufar"
+    lines = [f"🔍 <b>Найдено {total}</b> · {src_label} · стр. {page} ({start}–{end})"]
     if crit:
         lines.append(f"Критерии: <i>{_escape(' · '.join(crit))}</i>")
     lines.append("")
@@ -189,7 +191,8 @@ async def _run_search(cb, sub_id, offset):
         criteria["query"] = q or None
 
     try:
-        all_results = await search(criteria, limit=MAX_RESULTS)
+        src = sub.source or "avby"
+        all_results = await source_search(src, criteria, limit=MAX_RESULTS)
     except Exception as e:
         if cb.message is not None:
             try:

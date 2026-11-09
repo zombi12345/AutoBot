@@ -167,15 +167,21 @@ async def start_create(message: Message, state: FSMContext) -> None:
     mode = "once" if (message.text or "") == BTN_SEARCH else "sub"
     await state.clear()
     await state.update_data(
-        mode=mode,
+        mode=mode, source="avby",
         brand=None, brand_idx=None, model=None,
         year_from=None, year_to=None,
         price_from=None, price_to=None,
     )
-    await state.set_state(CreateSubscription.brand)
-    text, kb = render_brands(0)
-    hint = "🔍 Разовый поиск — в конце покажу объявления." if mode == "once" else "⏳ Новая подписка."
-    await message.answer(f"{hint}\n\n{text}", reply_markup=kb)
+    await state.set_state(CreateSubscription.source)
+    hint = "🔍 Разовый поиск" if mode == "once" else "⏳ Новая подписка"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🇧🇾 Av.by", callback_data="cs:src:avby"),
+            InlineKeyboardButton(text="🇧🇾 Kufar", callback_data="cs:src:kufar"),
+        ],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel")],
+    ])
+    await message.answer(f"{hint}\n\n<b>Где искать?</b>", reply_markup=kb)
 
 
 # ---------- Бренд ----------
@@ -531,7 +537,7 @@ async def on_done(cb: CallbackQuery, state: FSMContext) -> None:
     user = await get_or_create_user(u.id, username=u.username, first_name=u.first_name)
     sub = await create_subscription(
         user_id=user.id,
-        source="avby",
+        source=d.get("source") or "avby",
         brand=d.get("brand"),
         model=d.get("model"),
         year_from=d.get("year_from"),
@@ -631,3 +637,15 @@ async def on_search_once(cb: CallbackQuery, state: FSMContext) -> None:
     from app.handlers.subscriptions import find as find_mod
     await find_mod._render_search_results(cb, results, d)
     await cb.answer()
+
+@router.callback_query(F.data.startswith("cs:src:"))
+async def on_source_pick(cb: CallbackQuery, state: FSMContext) -> None:
+    src = cb.data.split(":")[2]
+    if src not in ("avby", "kufar"):
+        await cb.answer()
+        return
+    await state.update_data(source=src)
+    await state.set_state(CreateSubscription.brand)
+    text, kb = render_brands(0)
+    label = "Av.by" if src == "avby" else "Kufar"
+    await safe_edit(cb, f"📍 Источник: <b>{label}</b>\n\n{text}", kb)
