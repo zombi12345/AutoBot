@@ -10,6 +10,22 @@ from app.data.cars_full import BRAND_IDS, MODEL_IDS
 from app.db.repositories.subscriptions import get_subscription, mark_checked
 from app.services.parsers.avby import search
 
+def _median_for_year(year, all_items):
+    if not year:
+        prices = [r["price"] for r in all_items if r.get("price")]
+        return statistics.median(prices) if prices else None
+    with_year = [r for r in all_items if r.get("year") and r.get("price")]
+    if not with_year:
+        prices = [r["price"] for r in all_items if r.get("price")]
+        return statistics.median(prices) if prices else None
+    for delta in (1, 2, 3):
+        group = [r["price"] for r in with_year if abs(int(r["year"]) - int(year)) <= delta]
+        if len(group) >= 3:
+            return statistics.median(group)
+    all_prices = [r["price"] for r in all_items if r.get("price")]
+    return statistics.median(all_prices) if all_prices else None
+
+
 router = Router(name="subs_find")
 
 PAGE_SIZE = 15
