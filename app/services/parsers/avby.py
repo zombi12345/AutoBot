@@ -28,6 +28,53 @@ MAX_TOTAL = 100
 MAX_PAGES = 5
 
 
+_FUEL_RU = {
+    "gasoline": ["бензин", "petrol", "gasoline"],
+    "diesel": ["дизель", "diesel"],
+    "hybrid": ["гибрид", "hybrid"],
+    "electric": ["электро", "electric", "ev"],
+    "gas": ["газ", "lpg"],
+}
+_TRANS_RU = {
+    "automatic": ["автомат", "акпп", "automatic", "at"],
+    "manual": ["механика", "мкпп", "manual", "mt"],
+    "variator": ["вариатор", "cvt"],
+    "robot": ["робот", "dsg", "robot"],
+}
+
+
+def _apply_postfilter(items: list[dict], criteria: dict) -> list[dict]:
+    if not criteria:
+        return items
+    fuel = criteria.get("fuel_type")
+    trans = criteria.get("transmission")
+    mil = criteria.get("mileage_to")
+    out = []
+    for r in items:
+        params = (r.get("params") or "").lower()
+        if fuel:
+            keys = _FUEL_RU.get(fuel, [fuel])
+            if not any(k in params for k in keys):
+                continue
+        if trans:
+            keys = _TRANS_RU.get(trans, [trans])
+            if not any(k in params for k in keys):
+                continue
+        if mil:
+            # пробег в params: "152 000 км"
+            import re as _re
+            m = _re.search(r"(\d[\d\s]{2,})\s*км", params)
+            if m:
+                try:
+                    val = int(_re.sub(r"\D", "", m.group(1)))
+                    if val > mil:
+                        continue
+                except Exception:
+                    pass
+        out.append(r)
+    return out
+
+
 async def search(criteria: dict[str, Any], limit: int = MAX_TOTAL) -> list[dict]:
     """Ищет объявления на av.by. Собирает с нескольких страниц HTML."""
     body = _build_body(criteria)
@@ -67,7 +114,9 @@ async def search(criteria: dict[str, Any], limit: int = MAX_TOTAL) -> list[dict]
             log.info("avby: page %s → %d new (total %d)", page, len(new_items), len(out))
 
     if out:
-        log.info("avby: HTML fallback OK, %d results from %d pages", len(out), pages_tried)
+        before = len(out)
+        out = _apply_postfilter(out, criteria)
+        log.info("avby: HTML fallback OK, %d results from %d pages (postfilter: %d -> %d)", before, pages_tried, before, len(out))
     else:
         log.info("avby: no results for %s", body)
     return out
@@ -93,6 +142,23 @@ def _build_body(criteria: dict) -> dict[str, Any]:
         price["to"] = int(criteria["price_to"])
     if price:
         body["price"] = price
+    # D-15: расширенные фильтры
+    if criteria.get("fuel_type"):
+        body["fuel"] = [str(criteria["fuel_type"])]
+    if criteria.get("transmission"):
+        body["transmission"] = [str(criteria["transmission"])]
+    mileage: dict[str, int] = {}
+    if criteria.get("mileage_to"):
+        mileage["to"] = int(criteria["mileage_to"])
+    if mileage:
+        body["mileage"] = mileage
+    engine: dict[str, int] = {}
+    if criteria.get("engine_cc_from"):
+        engine["from"] = int(criteria["engine_cc_from"])
+    if criteria.get("engine_cc_to"):
+        engine["to"] = int(criteria["engine_cc_to"])
+    if engine:
+        body["engine_cc"] = engine
     if criteria.get("query"):
         body["query"] = str(criteria["query"])
     return body
@@ -112,6 +178,16 @@ def _build_html_url(criteria: dict, page: int = 1) -> str:
         params.append(("price[min]", int(criteria["price_from"])))
     if criteria.get("price_to"):
         params.append(("price[max]", int(criteria["price_to"])))
+    if criteria.get("fuel_type"):
+        params.append(("fuel[0]", str(criteria["fuel_type"])))
+    if criteria.get("transmission"):
+        params.append(("transmission[0]", str(criteria["transmission"])))
+    if criteria.get("mileage_to"):
+        params.append(("mileage[max]", int(criteria["mileage_to"])))
+    if criteria.get("engine_cc_from"):
+        params.append(("engine_cc[min]", int(criteria["engine_cc_from"])))
+    if criteria.get("engine_cc_to"):
+        params.append(("engine_cc[max]", int(criteria["engine_cc_to"])))
     if not params and criteria.get("query"):
         params.append(("query", str(criteria["query"])))
     if page > 1:
