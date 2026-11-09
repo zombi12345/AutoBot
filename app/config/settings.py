@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     check_interval_seconds: int = 600
     max_notifications_per_run: int = 20
     worker_enabled: bool = False
+    ai_base_url: str = "https://api.aiai.by/v1"
+    ai_api_key: str = ""
+    ai_model: str = "gpt-4.1-mini"
+    ai_enabled: bool = False
 
     @field_validator("admin_ids", mode="before")
     @classmethod

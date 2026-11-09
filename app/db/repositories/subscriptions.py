@@ -21,6 +21,12 @@ async def create_subscription(
     year_to: int | None = None,
     price_from: int | None = None,
     price_to: int | None = None,
+    fuel_type: str | None = None,
+    transmission: str | None = None,
+    body_type: str | None = None,
+    mileage_to: int | None = None,
+    engine_cc_from: int | None = None,
+    engine_cc_to: int | None = None,
     extra: dict[str, Any] | None = None,
 ) -> SearchSubscription:
     async with async_session_maker() as s:
@@ -33,6 +39,12 @@ async def create_subscription(
             year_to=year_to,
             price_from=price_from,
             price_to=price_to,
+            fuel_type=fuel_type,
+            transmission=transmission,
+            body_type=body_type,
+            mileage_to=mileage_to,
+            engine_cc_from=engine_cc_from,
+            engine_cc_to=engine_cc_to,
             extra=extra or {},
             status=SubscriptionStatus.ACTIVE,
             seen_listing_ids=[],
@@ -108,7 +120,7 @@ async def get_subscription(sub_id: int) -> SearchSubscription | None:
 
 
 async def update_subscription(sub_id: int, **fields) -> bool:
-    allowed = {"brand", "model", "year_from", "year_to", "price_from", "price_to", "status", "source", "extra", "seen_listing_ids", "last_checked_at"}
+    allowed = {"brand", "model", "year_from", "year_to", "price_from", "price_to", "status", "source", "extra", "seen_listing_ids", "last_checked_at", "fuel_type", "transmission", "body_type", "mileage_to", "engine_cc_from", "engine_cc_to"}
     async with async_session_maker() as s:
         sub = await s.get(SearchSubscription, sub_id)
         if sub is None:
