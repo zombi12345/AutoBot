@@ -167,21 +167,15 @@ async def start_create(message: Message, state: FSMContext) -> None:
     mode = "once" if (message.text or "") == BTN_SEARCH else "sub"
     await state.clear()
     await state.update_data(
-        mode=mode, source="avby",
+        mode=mode,
         brand=None, brand_idx=None, model=None,
         year_from=None, year_to=None,
         price_from=None, price_to=None,
     )
-    await state.set_state(CreateSubscription.source)
+    await state.set_state(CreateSubscription.brand)
     hint = "🔍 Разовый поиск" if mode == "once" else "⏳ Новая подписка"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🇧🇾 Av.by", callback_data="cs:src:avby"),
-            InlineKeyboardButton(text="🇧🇾 Kufar", callback_data="cs:src:kufar"),
-        ],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel")],
-    ])
-    await message.answer(f"{hint}\n\n<b>Где искать?</b>", reply_markup=kb)
+    text, kb = render_brands(0)
+    await message.answer(f"{hint}\n\n{text}", reply_markup=kb)
 
 
 # ---------- Бренд ----------
@@ -537,7 +531,7 @@ async def on_done(cb: CallbackQuery, state: FSMContext) -> None:
     user = await get_or_create_user(u.id, username=u.username, first_name=u.first_name)
     sub = await create_subscription(
         user_id=user.id,
-        source=d.get("source") or "avby",
+        source="both",
         brand=d.get("brand"),
         model=d.get("model"),
         year_from=d.get("year_from"),
@@ -603,10 +597,7 @@ async def on_search_once(cb: CallbackQuery, state: FSMContext) -> None:
     await get_or_create_user(u.id, username=u.username, first_name=u.first_name)
 
     from app.data.cars_full import BRAND_IDS, MODEL_IDS
-    from app.services.parsers import search as source_search
-
-    src = d.get("source") or "avby"
-    src_label = "Av.by" if src == "avby" else "Kufar"
+    from app.handlers.subscriptions.find import _search_all
 
     brand = d.get("brand")
     model = d.get("model")
@@ -618,7 +609,7 @@ async def on_search_once(cb: CallbackQuery, state: FSMContext) -> None:
     criteria = {
         "brand_id": brand_id,
         "model_id": model_id,
-        "brand": brand,          # для kufar_html
+        "brand": brand,
         "model": model,
         "year_from": d.get("year_from"),
         "year_to": d.get("year_to"),
@@ -627,9 +618,9 @@ async def on_search_once(cb: CallbackQuery, state: FSMContext) -> None:
         "query": None if brand_id else (f"{brand or ''} {model or ''}".strip() or None),
     }
     await state.clear()
-    await cb.message.edit_text(f"🔍 Ищу на {src_label}…")
+    await cb.message.edit_text("🔍 Ищу на av.by и Kufar…")
     try:
-        results = await source_search(src, criteria, limit=100)
+        results = await _search_all(criteria, 100)
     except Exception as e:
         await cb.message.edit_text(f"❌ Ошибка поиска: {e}")
         await cb.answer()
@@ -643,14 +634,3 @@ async def on_search_once(cb: CallbackQuery, state: FSMContext) -> None:
     await find_mod._render_search_results(cb, results, d)
     await cb.answer()
 
-@router.callback_query(F.data.startswith("cs:src:"))
-async def on_source_pick(cb: CallbackQuery, state: FSMContext) -> None:
-    src = cb.data.split(":")[2]
-    if src not in ("avby", "kufar"):
-        await cb.answer()
-        return
-    await state.update_data(source=src)
-    await state.set_state(CreateSubscription.brand)
-    text, kb = render_brands(0)
-    label = "Av.by" if src == "avby" else "Kufar"
-    await safe_edit(cb, f"📍 Источник: <b>{label}</b>\n\n{text}", kb)

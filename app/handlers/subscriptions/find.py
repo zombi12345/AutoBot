@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import statistics
 
 from aiogram import F, Router
@@ -14,6 +15,7 @@ router = Router(name="subs_find")
 
 PAGE_SIZE = 15
 MAX_RESULTS = 100
+SOURCES = ("avby", "kufar")
 
 LEGEND = (
     "💚 сильно ниже рынка (−30% и больше)\n"
@@ -23,6 +25,15 @@ LEGEND = (
     "🔴 сильно выше рынка (+30% и больше)\n"
     "Рынок = медиана объявлений той же модели ±1 год."
 )
+
+
+def _site(url: str) -> str:
+    u = (url or "").lower()
+    if "kufar" in u:
+        return "Kufar"
+    if "av.by" in u or "avby" in u:
+        return "av.by"
+    return "сайт"
 
 
 def _fmt(price, currency="BYN"):
@@ -67,12 +78,11 @@ def _median_for_year(year, all_items):
 
 
 def _sort_by_value(items, all_items):
-    """Сначала 💚 (самые выгодные), потом 🟢, ⚪, 🟠, 🔴."""
     def key(r):
         m = _median_for_year(r.get("year"), all_items)
         p = r.get("price")
         if not p or not m:
-            return 2.0  # в середину
+            return 2.0
         return p / m
     return sorted(items, key=key)
 
@@ -84,6 +94,7 @@ def _render_item(r, all_items):
     price = _fmt(r.get("price"), r.get("currency", "BYN"))
     year = r.get("year") or "—"
     params = (r.get("params") or "").strip()
+    site = _site(r.get("url"))
 
     delta_txt = ""
     if m and r.get("price"):
@@ -93,12 +104,12 @@ def _render_item(r, all_items):
 
     lines = [f"{badge} <b>{price}</b>{delta_txt} · {title} · {year}"]
     if params and params != str(year):
-        lines.append(f"<i>{_escape(params)}</i>")
-    lines.append(f'<a href="{r["url"]}">→ Открыть на av.by</a>')
+        lines.append(f"<i>{_escape(params[:200])}</i>")
+    lines.append(f'<a href="{r["url"]}">→ Открыть на {site}</a>')
     return "\n".join(lines)
 
 
-def _build_header(sub, page_items, total, offset, page, all_items, parsed: dict | None = None):
+def _build_header(sub, page_items, total, offset, page, all_items):
     crit = []
     if sub is not None:
         if sub.brand:
@@ -119,23 +130,9 @@ def _build_header(sub, page_items, total, offset, page, all_items, parsed: dict 
         if extras:
             crit.append(", ".join(extras))
 
-    if sub is None and parsed:
-        b = parsed.get("brand")
-        m = parsed.get("model")
-        if b or m:
-            crit.append(f"{b or ''} {m or ''}".strip())
-        yf = parsed.get("year_from")
-        yt = parsed.get("year_to")
-        if yf or yt:
-            crit.append(f"{yf or '...'}–{yt or '...'}")
-        if parsed.get("price_to"):
-            crit.append(f"≤${parsed['price_to']}")
-
     start = offset + 1
     end = offset + len(page_items)
-    src = getattr(sub, "source", None) or "avby"
-    src_label = "🇧🇾 Av.by" if src == "avby" else "🇧🇾 Kufar"
-    lines = [f"🔍 <b>Найдено {total}</b> · {src_label} · стр. {page} ({start}–{end})"]
+    lines = [f"🔍 <b>Найдено {total}</b> · стр. {page} ({start}–{end})"]
     if crit:
         lines.append(f"Критерии: <i>{_escape(' · '.join(crit))}</i>")
     lines.append("")
@@ -167,27 +164,15 @@ def _build_kb(sub_id, page, offset, total, has_more):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _run_search(cb, sub_id, offset):
-    sub = await get_subscription(sub_id)
-    if sub is None:
-        await cb.answer("Подписка не найдена", show_alert=True)
-        return
-
-    if cb.message is not None:
-        try:
-            await cb.message.edit_text("🔍 <b>Ищу на av.by…</b>")
-        except TelegramBadRequest:
-            pass
-
+def _criteria_from_sub(sub):
     brand_id = BRAND_IDS.get(sub.brand) if sub.brand else None
     model_id = None
     if brand_id and sub.model:
         model_id = (MODEL_IDS.get(sub.brand) or {}).get(sub.model)
-
-    criteria = {
+    crit = {
         "brand_id": brand_id,
         "model_id": model_id,
-        "brand": sub.brand,      # для kufar_html (query)
+        "brand": sub.brand,
         "model": sub.model,
         "year_from": sub.year_from,
         "year_to": sub.year_to,
@@ -202,11 +187,43 @@ async def _run_search(cb, sub_id, offset):
     }
     if not brand_id:
         q = " ".join(x for x in [sub.brand, sub.model] if x).strip()
-        criteria["query"] = q or None
+        crit["query"] = q or None
+    return crit
 
+
+async def _search_all(criteria, limit=MAX_RESULTS):
+    """Ищет во ВСЕХ источниках параллельно, объединяет."""
+    tasks = [source_search(src, criteria, limit=limit) for src in SOURCES]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    merged = []
+    seen_ids = set()
+    for i, res in enumerate(results):
+        if isinstance(res, Exception):
+            continue
+        for r in res:
+            key = (r.get("id"), r.get("url"))
+            if key in seen_ids:
+                continue
+            seen_ids.add(key)
+            merged.append(r)
+    return merged
+
+
+async def _run_search(cb, sub_id, offset):
+    sub = await get_subscription(sub_id)
+    if sub is None:
+        await cb.answer("Подписка не найдена", show_alert=True)
+        return
+
+    if cb.message is not None:
+        try:
+            await cb.message.edit_text("🔍 <b>Ищу на av.by и Kufar…</b>")
+        except TelegramBadRequest:
+            pass
+
+    criteria = _criteria_from_sub(sub)
     try:
-        src = sub.source or "avby"
-        all_results = await source_search(src, criteria, limit=MAX_RESULTS)
+        all_results = await _search_all(criteria, MAX_RESULTS)
     except Exception as e:
         if cb.message is not None:
             try:
@@ -220,7 +237,7 @@ async def _run_search(cb, sub_id, offset):
 
     if not all_results:
         txt = "😔 <b>Ничего не найдено.</b>\n\n"
-        if not brand_id:
+        if not criteria.get("brand_id"):
             txt += "💡 Марка вручную — попробуй ✏️ Марка из списка."
         if cb.message is not None:
             try:
@@ -229,7 +246,6 @@ async def _run_search(cb, sub_id, offset):
                 pass
         return
 
-    # сортировка: 💚 → 🔴
     all_results = _sort_by_value(all_results, all_results)
 
     total = len(all_results)
@@ -262,40 +278,14 @@ async def _run_search(cb, sub_id, offset):
             pass
 
 
-async def _render_search_results(cb, all_results, parsed_or_d=None, sort_by_mileage=False):
-    """Разовый поиск: без подписки. Сортировка по цвету."""
+async def _render_search_results(cb, all_results, parsed_or_d=None):
+    """Разовый поиск: те же правила."""
     if not all_results:
         return
-    if sort_by_mileage:
-        import re as _re
-        def _mil(r):
-            params = r.get("params") or ""
-            m = _re.search(r"(\d[\d\s]{2,})\s*км", params)
-            if m:
-                try:
-                    return int(_re.sub(r"\D", "", m.group(1)))
-                except Exception:
-                    return 10**9
-            return 10**9
-        all_results = sorted(all_results, key=_mil)
-    else:
-        all_results = _sort_by_value(all_results, all_results)
+    all_results = _sort_by_value(all_results, all_results)
     total = len(all_results)
     page_items = all_results[:PAGE_SIZE]
-    fake_sub = None
-    header = _build_header(fake_sub, page_items, total, 0, 1, all_results)
-    if isinstance(parsed_or_d, dict) and parsed_or_d:
-        parts = []
-        for k in ("brand", "model", "fuel_type", "transmission"):
-            v = parsed_or_d.get(k)
-            if v:
-                parts.append(str(v))
-        if parsed_or_d.get("year_from") or parsed_or_d.get("year_to"):
-            parts.append(f"{parsed_or_d.get('year_from') or '...'}–{parsed_or_d.get('year_to') or '...'}")
-        if parsed_or_d.get("price_to"):
-            parts.append(f"≤${parsed_or_d['price_to']}")
-        if parts:
-            header = header.replace("🔍 <b>Найдено", "🔍 <b>Найдено")
+    header = _build_header(None, page_items, total, 0, 1, all_results)
     body = _build_body(page_items, all_results)
     text = header + "\n\n" + body
     if len(text) > 4000:
