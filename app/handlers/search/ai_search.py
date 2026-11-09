@@ -1,10 +1,15 @@
 from __future__ import annotations
+
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
 from app.services.ai.parser import parse_query
+from app.states.subscription import AISearch
 
 router = Router(name="search_ai")
+
 BTN_AI = "🤖 Умный поиск"
 
 LABELS = [("brand","Марка"),("model","Модель"),("year_from","Год от"),("year_to","Год до"),
@@ -16,65 +21,88 @@ LABELS = [("brand","Марка"),("model","Модель"),("year_from","Год �
 @router.message(F.text == BTN_AI)
 async def start_ai(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await state.update_data(awaiting_ai=True)
+    await state.set_state(AISearch.awaiting)
     await message.answer(
         "🤖 <b>Умный поиск</b>\n\n"
         "Опиши машину своими словами.\n"
-        "Пример: <i>BMW X5 2019-2023 дизель автомат до 40000, пробег до 120к</i>"
+        "Пример: <i>BMW X5 2019-2023 дизель автомат до 40000, пробег до 120к</i>\n\n"
+        "/cancel — отмена"
     )
 
 
-@router.message(F.text & ~F.text.startswith("/"))
+@router.message(StateFilter(AISearch.awaiting), F.text)
 async def on_ai_query(message: Message, state: FSMContext) -> None:
-    print(f"DEBUG on_ai_query: text={message.text!r}", flush=True)
     from app.config import settings
-    if not settings.ai_enabled: return
-    d = await state.get_data()
-    if not d.get("awaiting_ai"): return
-    txt = (message.text or "").strip()
-    if len(txt) < 5: return
+    if not settings.ai_enabled:
+        await message.answer(
+            "⚠️ AI-парсинг выключен (нет AI_API_KEY).\n\n"
+            "Пока могу искать через каскад: 🔍 Разовый поиск или ⏳ Долгий поиск.",
+        )
+        await state.clear()
+        return
 
-    from app.keyboards.main_menu import BTN_AI, BTN_HELP, BTN_LONG_SEARCH, BTN_MY_SUBS, BTN_SEARCH
-    if txt in {BTN_HELP, BTN_MY_SUBS, BTN_SEARCH, BTN_LONG_SEARCH, BTN_AI}: return
+    txt = (message.text or "").strip()
+    if len(txt) < 3:
+        await message.answer("Опиши подробнее.")
+        return
+    if txt.startswith("/"):
+        return
 
     await message.answer("🤖 Разбираю…")
     parsed = await parse_query(txt)
-    lines = ["📋 <b>Вот что я понял:</b>",""]
+    lines = ["📋 <b>Вот что я понял:</b>", ""]
     for k, lbl in LABELS:
-        lines.append(f"• {lbl}: {parsed.get(k) if parsed.get(k) is not None else '—'}")
-    lines += ["","Всё верно?"]
+        v = parsed.get(k)
+        lines.append(f"• {lbl}: {v if v is not None else '—'}")
+    lines += ["", "Всё верно?"]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Искать", callback_data="ai:ok")],
+        [InlineKeyboardButton(text="✅ Искать / Сохранить", callback_data="ai:ok")],
         [InlineKeyboardButton(text="✏️ Заново", callback_data="ai:retry")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="ai:cancel")],
     ])
     await message.answer("\n".join(lines), reply_markup=kb)
-    await state.update_data(ai_parsed=parsed)
+    await state.update_data(ai_parsed=parsed, ai_raw=txt)
+
+
+@router.message(StateFilter(AISearch.awaiting), F.text.startswith("/cancel"))
+async def ai_cmd_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("❌ Отменено")
 
 
 @router.callback_query(F.data == "ai:cancel")
 async def ai_cancel(cb: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    if cb.message: await cb.message.edit_text("❌ Отменено")
+    if cb.message:
+        await cb.message.edit_text("❌ Отменено")
     await cb.answer()
 
 
 @router.callback_query(F.data == "ai:retry")
 async def ai_retry(cb: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(awaiting_ai=True, ai_parsed=None)
-    if cb.message: await cb.message.edit_text("✏️ Напиши запрос заново.")
+    await state.set_state(AISearch.awaiting)
+    await state.update_data(ai_parsed=None)
+    if cb.message:
+        await cb.message.edit_text("✏️ Напиши запрос заново.")
     await cb.answer()
 
 
 @router.callback_query(F.data == "ai:ok")
 async def ai_ok(cb: CallbackQuery, state: FSMContext) -> None:
-    """Пользователь подтвердил parsed — предлагаем искать или сохранить."""
     if cb.message is None or cb.from_user is None:
         await cb.answer()
         return
     d = await state.get_data()
     parsed = d.get("ai_parsed") or {}
     raw = d.get("ai_raw") or ""
+
+    if not any(parsed.values()):
+        await cb.message.edit_text(
+            "⚠️ Не смог разобрать запрос. Опиши подробнее: марка, модель, год, цена."
+        )
+        await cb.answer()
+        return
+
     await state.update_data(ai_raw=raw)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Искать сейчас", callback_data="ai:search")],
@@ -146,9 +174,6 @@ async def ai_save(cb: CallbackQuery, state: FSMContext) -> None:
 
     from app.db.repositories.subscriptions import create_subscription
     from app.db.repositories.users import get_or_create_user
-    from app.handlers.subscriptions import find as find_mod
-    from app.services.parsers.avby import search as avby_search
-    from app.data.cars_full import BRAND_IDS, MODEL_IDS
     from app.keyboards.main_menu import main_menu_kb
 
     u = cb.from_user

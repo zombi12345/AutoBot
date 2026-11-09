@@ -17,3 +17,6 @@ class CreateSubscription(StatesGroup):
     manual_price_to = State()
     confirm_brand = State()
     confirm_model = State()
+
+class AISearch(StatesGroup):
+    awaiting = State()

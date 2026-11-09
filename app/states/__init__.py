@@ -1,3 +1,3 @@
-from app.states.subscription import CreateSubscription
+from app.states.subscription import AISearch, CreateSubscription
 
-__all__ = ["CreateSubscription"]
+__all__ = ["CreateSubscription", "AISearch"]
