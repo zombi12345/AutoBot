@@ -164,6 +164,7 @@ async def _try_save_edit(cb: CallbackQuery, state: FSMContext, field: str, value
 
 @router.message(F.text.in_([BTN_LONG_SEARCH, BTN_SEARCH]))
 async def start_create(message: Message, state: FSMContext) -> None:
+    print(f"DEBUG start_create: text={message.text!r}", flush=True)
     mode = "once" if (message.text or "") == BTN_SEARCH else "sub"
     await state.clear()
     await state.update_data(

@@ -26,6 +26,7 @@ async def start_ai(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_ai_query(message: Message, state: FSMContext) -> None:
+    print(f"DEBUG on_ai_query: text={message.text!r}", flush=True)
     from app.config import settings
     if not settings.ai_enabled: return
     d = await state.get_data()
