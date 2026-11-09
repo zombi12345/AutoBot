@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import aiohttp
@@ -10,12 +11,11 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 REEF_URL = "https://api.reefapi.com/kufar/v1/search"
-CAR_CATEGORY = "2010"  # leaf id: Легковые автомобили
+CAR_CATEGORY = "2010"  # leaf: Легковые авто
 USD_TO_BYN = 3.27
 
 
 async def search(criteria: dict[str, Any], limit: int = 50) -> list[dict]:
-    """Kufar через ReefAPI. criteria: brand, model, year_from/to, price_from/to (USD)."""
     key = settings.reef_api_key
     if not key:
         log.warning("kufar: REEF_API_KEY не задан")
@@ -28,7 +28,11 @@ async def search(criteria: dict[str, Any], limit: int = 50) -> list[dict]:
         q_parts.append(str(criteria["model"]))
     query = " ".join(q_parts).strip()
 
-    body: dict[str, Any] = {"category": CAR_CATEGORY, "size": min(200, max(1, limit)), "sort": "newest"}
+    body: dict[str, Any] = {
+        "category": CAR_CATEGORY,
+        "size": min(200, max(1, limit)),
+        "sort": "newest",
+    }
     if query:
         body["query"] = query
     if criteria.get("price_from"):
@@ -41,21 +45,21 @@ async def search(criteria: dict[str, Any], limit: int = 50) -> list[dict]:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s:
             async with s.post(REEF_URL, headers=headers, json=body) as r:
                 if r.status != 200:
-                    log.warning("kufar reef HTTP %s: %s", r.status, (await r.text())[:200])
+                    log.warning("kufar reef HTTP %s: %s", r.status, (await r.text())[:300])
                     return []
                 data = await r.json()
     except Exception as e:
         log.warning("kufar reef fail: %s", e)
         return []
 
-    rows = (data.get("data") or {}).get("ads") or []
+    rows = (data.get("data") or {}).get("listings") or []
     if not isinstance(rows, list):
+        log.warning("kufar: listings not list: %s", str(data)[:200])
         return []
     items = _parse(rows, limit)
-    if criteria.get("year_from") or criteria.get("year_to"):
-        items = _postfilter(items, criteria)
+
+    # fallback: query не дал — берём категорию и фильтруем в Python
     if not items and query:
-        # fallback: Kufar не нашёл по query — берём всю категорию и фильтруем в Python
         log.info("kufar: query=%r -> 0, fallback category-only", query)
         body.pop("query", None)
         try:
@@ -63,13 +67,14 @@ async def search(criteria: dict[str, Any], limit: int = 50) -> list[dict]:
                 async with s2.post(REEF_URL, headers=headers, json=body) as r2:
                     if r2.status == 200:
                         data2 = await r2.json()
-                        rows2 = (data2.get("data") or {}).get("ads") or []
+                        rows2 = (data2.get("data") or {}).get("listings") or []
                         items = _parse(rows2, limit)
                         items = _filter_by_brand_model(items, criteria)
-                        if criteria.get("year_from") or criteria.get("year_to"):
-                            items = _postfilter(items, criteria)
         except Exception as e:
             log.warning("kufar fallback fail: %s", e)
+
+    if criteria.get("year_from") or criteria.get("year_to"):
+        items = _postfilter(items, criteria)
 
     log.info("kufar: %d results (query=%r)", len(items), query)
     return items
@@ -83,29 +88,27 @@ def _parse(rows: list, limit: int) -> list[dict]:
                 continue
             ad_id = ad.get("listing_id") or ad.get("id")
             title = ad.get("title") or "—"
-            url = ad.get("url") or (f"https://auto.kufar.by/item/{ad_id}" if ad_id else None)
+            url = ad.get("url") or (f"https://auto.kufar.by/vi/{ad_id}" if ad_id else None)
             if not url:
                 continue
-            price = ad.get("price_byn")
-            if price is None:
-                price = ad.get("price")
-            currency = ad.get("price_currency") or "BYN"
+            price = ad.get("price_byn") or ad.get("price")
+            currency = "BYN"
+            if not ad.get("price_byn") and ad.get("price_currency"):
+                currency = ad.get("price_currency")
 
+            # год из title (Kufar не даёт body в search)
             year = None
-            params_parts: list[str] = []
-            attrs = ad.get("attributes") or ad.get("params") or []
-            for p in attrs:
-                if not isinstance(p, dict):
-                    continue
-                label = p.get("label") or p.get("name") or ""
-                value = p.get("value") or p.get("display_value") or ""
-                if label and value:
-                    params_parts.append(f"{label}: {value}")
-                    if "год" in label.lower() or "year" in label.lower():
-                        import re
-                        m = re.search(r"(19|20)\d{2}", str(value))
-                        if m:
-                            year = int(m.group(0))
+            m = re.search(r"\b(19|20)\d{2}\b", str(title))
+            if m:
+                year = int(m.group(0))
+
+            # params: title + регион
+            parts = [title]
+            if ad.get("region_name"):
+                parts.append(f"регион: {ad['region_name']}")
+            if ad.get("posted_at"):
+                parts.append(f"опубликовано: {str(ad['posted_at'])[:10]}")
+
             out.append({
                 "id": str(ad_id) if ad_id else url,
                 "title": str(title),
@@ -113,10 +116,26 @@ def _parse(rows: list, limit: int) -> list[dict]:
                 "price": int(price) if price else None,
                 "currency": currency,
                 "url": url,
-                "params": ", ".join(params_parts),
+                "params": " · ".join(parts),
             })
         except Exception:
             continue
+    return out
+
+
+def _filter_by_brand_model(items: list[dict], criteria: dict) -> list[dict]:
+    brand = (criteria.get("brand") or "").lower()
+    model = (criteria.get("model") or "").lower()
+    if not brand and not model:
+        return items
+    out = []
+    for r in items:
+        text = (r.get("title", "") + " " + r.get("params", "")).lower()
+        if brand and brand not in text:
+            continue
+        if model and model not in text:
+            continue
+        out.append(r)
     return out
 
 
@@ -128,22 +147,6 @@ def _postfilter(items: list[dict], criteria: dict) -> list[dict]:
         if yf and y and y < yf:
             continue
         if yt and y and y > yt:
-            continue
-        out.append(r)
-    return out
-
-def _filter_by_brand_model(items: list[dict], criteria: dict) -> list[dict]:
-    """Fallback: Kufar query не нашёл, фильтруем по title/params в Python."""
-    brand = (criteria.get("brand") or "").lower()
-    model = (criteria.get("model") or "").lower()
-    if not brand and not model:
-        return items
-    out = []
-    for r in items:
-        text = (r.get("title", "") + " " + r.get("params", "")).lower()
-        if brand and brand not in text:
-            continue
-        if model and model not in text:
             continue
         out.append(r)
     return out
