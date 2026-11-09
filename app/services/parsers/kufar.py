@@ -54,6 +54,23 @@ async def search(criteria: dict[str, Any], limit: int = 50) -> list[dict]:
     items = _parse(rows, limit)
     if criteria.get("year_from") or criteria.get("year_to"):
         items = _postfilter(items, criteria)
+    if not items and query:
+        # fallback: Kufar не нашёл по query — берём всю категорию и фильтруем в Python
+        log.info("kufar: query=%r -> 0, fallback category-only", query)
+        body.pop("query", None)
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s2:
+                async with s2.post(REEF_URL, headers=headers, json=body) as r2:
+                    if r2.status == 200:
+                        data2 = await r2.json()
+                        rows2 = (data2.get("data") or {}).get("ads") or []
+                        items = _parse(rows2, limit)
+                        items = _filter_by_brand_model(items, criteria)
+                        if criteria.get("year_from") or criteria.get("year_to"):
+                            items = _postfilter(items, criteria)
+        except Exception as e:
+            log.warning("kufar fallback fail: %s", e)
+
     log.info("kufar: %d results (query=%r)", len(items), query)
     return items
 
@@ -111,6 +128,22 @@ def _postfilter(items: list[dict], criteria: dict) -> list[dict]:
         if yf and y and y < yf:
             continue
         if yt and y and y > yt:
+            continue
+        out.append(r)
+    return out
+
+def _filter_by_brand_model(items: list[dict], criteria: dict) -> list[dict]:
+    """Fallback: Kufar query не нашёл, фильтруем по title/params в Python."""
+    brand = (criteria.get("brand") or "").lower()
+    model = (criteria.get("model") or "").lower()
+    if not brand and not model:
+        return items
+    out = []
+    for r in items:
+        text = (r.get("title", "") + " " + r.get("params", "")).lower()
+        if brand and brand not in text:
+            continue
+        if model and model not in text:
             continue
         out.append(r)
     return out
