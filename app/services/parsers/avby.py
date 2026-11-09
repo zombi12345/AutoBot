@@ -43,15 +43,27 @@ _TRANS_RU = {
 }
 
 
+USD_TO_BYN = 3.27
+
+
 def _apply_postfilter(items: list[dict], criteria: dict) -> list[dict]:
     if not criteria:
         return items
     fuel = criteria.get("fuel_type")
     trans = criteria.get("transmission")
     mil = criteria.get("mileage_to")
+    p_from = criteria.get("price_from")
+    p_to = criteria.get("price_to")
+    cc_from = criteria.get("engine_cc_from")
+    cc_to = criteria.get("engine_cc_to")
+
+    p_from_byn = int(p_from * USD_TO_BYN) if p_from else None
+    p_to_byn = int(p_to * USD_TO_BYN) if p_to else None
+
     out = []
     for r in items:
         params = (r.get("params") or "").lower()
+        price = r.get("price")
         if fuel:
             keys = _FUEL_RU.get(fuel, [fuel])
             if not any(k in params for k in keys):
@@ -61,13 +73,28 @@ def _apply_postfilter(items: list[dict], criteria: dict) -> list[dict]:
             if not any(k in params for k in keys):
                 continue
         if mil:
-            # пробег в params: "152 000 км"
             import re as _re
             m = _re.search(r"(\d[\d\s]{2,})\s*км", params)
             if m:
                 try:
                     val = int(_re.sub(r"\D", "", m.group(1)))
                     if val > mil:
+                        continue
+                except Exception:
+                    pass
+        if price and p_from_byn and price < p_from_byn:
+            continue
+        if price and p_to_byn and price > p_to_byn:
+            continue
+        if cc_from or cc_to:
+            import re as _re
+            m = _re.search(r"(\d[.,]\d)\s*л", params)
+            if m:
+                try:
+                    cc = int(float(m.group(1).replace(",", ".")) * 1000)
+                    if cc_from and cc < cc_from:
+                        continue
+                    if cc_to and cc > cc_to:
                         continue
                 except Exception:
                     pass

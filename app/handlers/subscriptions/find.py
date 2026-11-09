@@ -10,6 +10,46 @@ from app.data.cars_full import BRAND_IDS, MODEL_IDS
 from app.db.repositories.subscriptions import get_subscription, mark_checked
 from app.services.parsers.avby import search
 
+router = Router(name="subs_find")
+
+PAGE_SIZE = 15
+MAX_RESULTS = 100
+
+LEGEND = (
+    "💚 сильно ниже рынка (−30% и больше)\n"
+    "🟢 ниже рынка (−10…−30%)\n"
+    "⚪ рынок (±10%)\n"
+    "🟠 выше рынка (+10…+30%)\n"
+    "🔴 сильно выше рынка (+30% и больше)\n"
+    "Рынок = медиана объявлений той же модели ±1 год."
+)
+
+
+def _fmt(price, currency="BYN"):
+    if not price:
+        return "—"
+    return f"{price:,}".replace(",", " ") + f" {currency}"
+
+
+def _price_badge(price, median):
+    if not price or not median:
+        return "⚪"
+    r = price / median
+    if r <= 0.7:
+        return "💚"
+    if r <= 0.9:
+        return "🟢"
+    if r <= 1.1:
+        return "⚪"
+    if r <= 1.3:
+        return "🟠"
+    return "🔴"
+
+
+def _escape(s):
+    return (s or "").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _median_for_year(year, all_items):
     if not year:
         prices = [r["price"] for r in all_items if r.get("price")]
@@ -26,88 +66,81 @@ def _median_for_year(year, all_items):
     return statistics.median(all_prices) if all_prices else None
 
 
-router = Router(name="subs_find")
-
-PAGE_SIZE = 15
-MAX_RESULTS = 100
-
-LEGEND = (
-    "ниже рынка 30%+ / ниже 10%+ / рынок (+-10%) / "
-    "выше 10%+ / выше 30%+"
-)
-
-
-def _fmt(price, currency="BYN"):
-    if not price:
-        return "-"
-    return f"{price:,}".replace(",", " ") + f" {currency}"
+def _sort_by_value(items, all_items):
+    """Сначала 💚 (самые выгодные), потом 🟢, ⚪, 🟠, 🔴."""
+    def key(r):
+        m = _median_for_year(r.get("year"), all_items)
+        p = r.get("price")
+        if not p or not m:
+            return 2.0  # в середину
+        return p / m
+    return sorted(items, key=key)
 
 
-def _price_badge(price, median):
-    if not price or not median:
-        return "[ ]"
-    ratio = price / median
-    if ratio <= 0.7:
-        return "💚"
-    if ratio <= 0.9:
-        return "🟢"
-    if ratio <= 1.1:
-        return "⚪"
-    if ratio <= 1.3:
-        return "🟠"
-    return "🔴"
-
-
-def _escape(s):
-    return (s or "").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _render_item(r: dict, median: float | None, all_items: list[dict] | None = None) -> str:
-    y_median = _median_for_year(r.get("year"), all_items) if all_items else median
-    badge = _price_badge(r.get("price"), y_median)
+def _render_item(r, all_items):
+    m = _median_for_year(r.get("year"), all_items)
+    badge = _price_badge(r.get("price"), m)
     title = _escape(r["title"])
     price = _fmt(r.get("price"), r.get("currency", "BYN"))
     year = r.get("year") or "—"
     params = (r.get("params") or "").strip()
 
-    lines = [f"{badge} <b>{price}</b> · {title} · {year}"]
+    delta_txt = ""
+    if m and r.get("price"):
+        d = (r["price"] - m) / m * 100
+        sign = "+" if d >= 0 else ""
+        delta_txt = f" ({sign}{d:.0f}% к медиане)"
+
+    lines = [f"{badge} <b>{price}</b>{delta_txt} · {title} · {year}"]
     if params and params != str(year):
         lines.append(f"<i>{_escape(params)}</i>")
     lines.append(f'<a href="{r["url"]}">→ Открыть на av.by</a>')
     return "\n".join(lines)
 
-def _build_header(sub, page_items, total, offset, page, median):
+
+def _build_header(sub, page_items, total, offset, page, all_items):
     crit = []
-    if sub.brand:
-        crit.append(sub.brand)
-    if sub.model:
-        crit.append(sub.model)
-    if sub.year_from or sub.year_to:
-        crit.append(f"{sub.year_from or '...'} - {sub.year_to or '...'}")
+    if sub is not None:
+        if sub.brand:
+            crit.append(sub.brand)
+        if sub.model:
+            crit.append(sub.model)
+        if sub.year_from or sub.year_to:
+            crit.append(f"{sub.year_from or '...'}–{sub.year_to or '...'}")
+        if sub.price_from or sub.price_to:
+            crit.append(f"${sub.price_from or '...'}–${sub.price_to or '...'}")
+        extras = []
+        if getattr(sub, "fuel_type", None):
+            extras.append(sub.fuel_type)
+        if getattr(sub, "transmission", None):
+            extras.append(sub.transmission)
+        if getattr(sub, "mileage_to", None):
+            extras.append(f"пробег≤{sub.mileage_to}")
+        if extras:
+            crit.append(", ".join(extras))
 
     start = offset + 1
     end = offset + len(page_items)
-    lines = [
-        f"🔍 Найдено {total} · стр. {page} ({start}–{end})",
-        f"Критерии: <i>{_escape(' '.join(crit)) or '-'}</i>",
-    ]
-    if median:
-        lines.append(f"Медиана: <b>{_fmt(int(median))}</b>")
-    lines.append(f"<i>Цвет: {LEGEND}</i>")
+    lines = [f"🔍 <b>Найдено {total}</b> · стр. {page} ({start}–{end})"]
+    if crit:
+        lines.append(f"Критерии: <i>{_escape(' · '.join(crit))}</i>")
+    lines.append("")
+    lines.append(f"<i>{LEGEND}</i>")
     return "\n".join(lines)
 
 
-def _build_body(items: list[dict], median: float | None, all_items: list[dict] | None = None) -> str:
+def _build_body(items, all_items):
     SEP = "\n\n"
-    return SEP.join(_render_item(r, median, all_items) for r in items)
+    return SEP.join(_render_item(r, all_items) for r in items)
+
 
 def _build_kb(sub_id, page, offset, total, has_more):
     rows = []
     if has_more:
-        next_offset = offset + PAGE_SIZE
+        next_off = offset + PAGE_SIZE
         rows.append([InlineKeyboardButton(
             text=f"🔽 Ещё {PAGE_SIZE} (стр. {page + 1})",
-            callback_data=f"subs:find:{sub_id}:{next_offset}",
+            callback_data=f"subs:find:{sub_id}:{next_off}",
         )])
     else:
         rows.append([InlineKeyboardButton(
@@ -119,6 +152,7 @@ def _build_kb(sub_id, page, offset, total, has_more):
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
 async def _run_search(cb, sub_id, offset):
     sub = await get_subscription(sub_id)
     if sub is None:
@@ -127,7 +161,7 @@ async def _run_search(cb, sub_id, offset):
 
     if cb.message is not None:
         try:
-            await cb.message.edit_text("🔍 Ищу на av.by…")
+            await cb.message.edit_text("🔍 <b>Ищу на av.by…</b>")
         except TelegramBadRequest:
             pass
 
@@ -143,6 +177,11 @@ async def _run_search(cb, sub_id, offset):
         "year_to": sub.year_to,
         "price_from": sub.price_from,
         "price_to": sub.price_to,
+        "fuel_type": getattr(sub, "fuel_type", None),
+        "transmission": getattr(sub, "transmission", None),
+        "mileage_to": getattr(sub, "mileage_to", None),
+        "engine_cc_from": getattr(sub, "engine_cc_from", None),
+        "engine_cc_to": getattr(sub, "engine_cc_to", None),
         "query": None,
     }
     if not brand_id:
@@ -155,7 +194,7 @@ async def _run_search(cb, sub_id, offset):
         if cb.message is not None:
             try:
                 await cb.message.edit_text(
-                    f"Ошибка поиска: {_escape(str(e))}",
+                    f"❌ Ошибка поиска: {_escape(str(e))}",
                     reply_markup=_build_kb(sub_id, 1, 0, 0, False),
                 )
             except TelegramBadRequest:
@@ -163,9 +202,9 @@ async def _run_search(cb, sub_id, offset):
         return
 
     if not all_results:
-        txt = "Ничего не найдено."
+        txt = "😔 <b>Ничего не найдено.</b>\n\n"
         if not brand_id:
-            txt += " Марка вручную - попробуй редактирование марки из списка."
+            txt += "💡 Марка вручную — попробуй ✏️ Марка из списка."
         if cb.message is not None:
             try:
                 await cb.message.edit_text(txt, reply_markup=_build_kb(sub_id, 1, 0, 0, False))
@@ -173,21 +212,20 @@ async def _run_search(cb, sub_id, offset):
                 pass
         return
 
+    # сортировка: 💚 → 🔴
+    all_results = _sort_by_value(all_results, all_results)
+
     total = len(all_results)
     page_items = all_results[offset:offset + PAGE_SIZE]
     if not page_items:
         await cb.answer("Больше нет")
         return
 
-    prices = [r["price"] for r in all_results if r.get("price")]
-    median = statistics.median(prices) if prices else None
-
     page = offset // PAGE_SIZE + 1
     has_more = (offset + PAGE_SIZE) < total
-    header = _build_header(sub, page_items, total, offset, page, median)
-    body = _build_body(page_items, median, all_results)
+    header = _build_header(sub, page_items, total, offset, page, all_results)
+    body = _build_body(page_items, all_results)
     text = header + "\n\n" + body
-
     if len(text) > 4000:
         text = text[:3990] + "\n\n<i>(усечено, жми Ещё)</i>"
 
@@ -207,6 +245,38 @@ async def _run_search(cb, sub_id, offset):
             pass
 
 
+async def _render_search_results(cb, all_results, parsed_or_d=None):
+    """Разовый поиск: без подписки. Сортировка по цвету."""
+    if not all_results:
+        return
+    all_results = _sort_by_value(all_results, all_results)
+    total = len(all_results)
+    page_items = all_results[:PAGE_SIZE]
+    fake_sub = None
+    header = _build_header(fake_sub, page_items, total, 0, 1, all_results)
+    if isinstance(parsed_or_d, dict) and parsed_or_d:
+        parts = []
+        for k in ("brand", "model", "fuel_type", "transmission"):
+            v = parsed_or_d.get(k)
+            if v:
+                parts.append(str(v))
+        if parsed_or_d.get("year_from") or parsed_or_d.get("year_to"):
+            parts.append(f"{parsed_or_d.get('year_from') or '...'}–{parsed_or_d.get('year_to') or '...'}")
+        if parsed_or_d.get("price_to"):
+            parts.append(f"≤${parsed_or_d['price_to']}")
+        if parts:
+            header = header.replace("🔍 <b>Найдено", "🔍 <b>Найдено")
+    body = _build_body(page_items, all_results)
+    text = header + "\n\n" + body
+    if len(text) > 4000:
+        text = text[:3990] + "\n\n<i>(усечено)</i>"
+    if cb.message is not None:
+        try:
+            await cb.message.edit_text(text, disable_web_page_preview=True)
+        except Exception:
+            pass
+
+
 @router.callback_query(F.data.startswith("subs:find:"))
 async def on_find(cb):
     parts = cb.data.split(":")
@@ -222,32 +292,3 @@ async def on_find(cb):
 @router.callback_query(F.data == "subs:noop")
 async def on_noop(cb):
     await cb.answer("Это все объявления")
-
-
-async def _render_search_results(cb, all_results, d):
-    """Показать результаты разового поиска без привязки к подписке."""
-    import statistics
-    if not all_results:
-        return
-    # sub_id = None -> кнопки ведут на назад в главное меню (см. build_kb без sub)
-    prices = [r["price"] for r in all_results if r.get("price")]
-    median = statistics.median(prices) if prices else None
-    total = len(all_results)
-    page_items = all_results[:PAGE_SIZE]
-    header_lines = [
-        f"🔍 <b>Найдено {total}</b> · стр. 1 (1–{len(page_items)})",
-        f"<i>{LEGEND}</i>",
-    ]
-    if median:
-        header_lines.insert(1, f"Медиана: <b>{_fmt(int(median))}</b>")
-    header = "\n".join(header_lines)
-    body = _build_body(page_items, median, all_results)
-    text = header + "\n\n" + body
-    if len(text) > 4000:
-        text = text[:3990] + "\n\n<i>(усечено)</i>"
-
-    if cb.message is not None:
-        try:
-            await cb.message.edit_text(text, disable_web_page_preview=True)
-        except Exception:
-            pass

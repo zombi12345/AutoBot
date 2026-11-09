@@ -176,6 +176,13 @@ async def ai_save(cb: CallbackQuery, state: FSMContext) -> None:
     from app.db.repositories.users import get_or_create_user
     from app.keyboards.main_menu import main_menu_kb
 
+    # защита: не создавать мусорную подписку
+    meaningful = any(parsed.get(k) for k in ("brand", "model", "year_from", "year_to", "price_to"))
+    if not meaningful:
+        await cb.message.edit_text("⚠️ Не понял критериев. Опиши подробнее: марка, модель, год, цена.")
+        await cb.answer()
+        return
+
     u = cb.from_user
     user = await get_or_create_user(u.id, username=u.username, first_name=u.first_name)
     sub = await create_subscription(
