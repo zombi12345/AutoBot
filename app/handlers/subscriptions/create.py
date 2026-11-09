@@ -167,7 +167,7 @@ async def start_create(message: Message, state: FSMContext) -> None:
     mode = "once" if (message.text or "") == BTN_SEARCH else "sub"
     await state.clear()
     await state.update_data(
-        mode=mode, source="avby",
+        mode=mode, source=d.get("source") or "avby",
         brand=None, brand_idx=None, model=None,
         year_from=None, year_to=None,
         price_from=None, price_to=None,
