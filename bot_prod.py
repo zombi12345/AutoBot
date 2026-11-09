@@ -74,6 +74,18 @@ async def handle_admin_run_worker(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+async def handle_admin_run_worker(request: web.Request) -> web.Response:
+    try:
+        from worker.jobs import run_once as worker_run_once
+        bot = request.app.get("bot")
+        if bot is None:
+            return web.json_response({"error": "bot not attached"}, status=500)
+        stats = await worker_run_once(bot)
+        return web.json_response({"ok": True, **stats})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def start_web_server() -> web.AppRunner:
     web_app = web.Application()
     web_app.router.add_get("/health", handle_health)
