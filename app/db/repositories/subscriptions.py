@@ -127,6 +127,8 @@ async def update_subscription(sub_id: int, **fields) -> bool:
             return False
         for k, v in fields.items():
             if k in allowed:
+                if k == "seen_listing_ids" and isinstance(v, list):
+                    v = v[-_SEEN_LIMIT:]
                 setattr(sub, k, v)
         await s.commit()
         return True
