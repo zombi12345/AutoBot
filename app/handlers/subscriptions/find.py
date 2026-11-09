@@ -222,3 +222,32 @@ async def on_find(cb):
 @router.callback_query(F.data == "subs:noop")
 async def on_noop(cb):
     await cb.answer("Это все объявления")
+
+
+async def _render_search_results(cb, all_results, d):
+    """Показать результаты разового поиска без привязки к подписке."""
+    import statistics
+    if not all_results:
+        return
+    # sub_id = None -> кнопки ведут на назад в главное меню (см. build_kb без sub)
+    prices = [r["price"] for r in all_results if r.get("price")]
+    median = statistics.median(prices) if prices else None
+    total = len(all_results)
+    page_items = all_results[:PAGE_SIZE]
+    header_lines = [
+        f"🔍 <b>Найдено {total}</b> · стр. 1 (1–{len(page_items)})",
+        f"<i>{LEGEND}</i>",
+    ]
+    if median:
+        header_lines.insert(1, f"Медиана: <b>{_fmt(int(median))}</b>")
+    header = "\n".join(header_lines)
+    body = _build_body(page_items, median, all_results)
+    text = header + "\n\n" + body
+    if len(text) > 4000:
+        text = text[:3990] + "\n\n<i>(усечено)</i>"
+
+    if cb.message is not None:
+        try:
+            await cb.message.edit_text(text, disable_web_page_preview=True)
+        except Exception:
+            pass

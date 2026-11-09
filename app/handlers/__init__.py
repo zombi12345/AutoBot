@@ -1,7 +1,5 @@
 from aiogram import Router
-
 from app.handlers import common, search, subscriptions
-
 
 def setup_routers() -> Router:
     root = Router(name="root")

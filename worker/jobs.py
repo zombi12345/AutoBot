@@ -46,7 +46,7 @@ async def run_once(bot: Bot) -> dict:
         except Exception as e:
             log.exception("sub #%s fail: %s", sub.id, e)
             stats["errors"] += 1
-    log.info("worker: subs=%s sent=%s errors=%s", stats["subs"], stats["sent"], stats["errors"])
+    log.info("worker: subs=%s sent_total=%s errors=%s", stats["subs"], stats["sent"], stats["errors"])
     try:
         if stats["sent"]:
             await increment_sent(stats["sent"])

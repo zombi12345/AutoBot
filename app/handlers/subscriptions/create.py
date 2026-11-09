@@ -13,7 +13,7 @@ from aiogram.types import (
 from app.data.cars_full import BRAND_NAMES, BRANDS
 from app.db.repositories.subscriptions import create_subscription, update_subscription
 from app.db.repositories.users import get_or_create_user
-from app.keyboards.main_menu import BTN_LONG_SEARCH, main_menu_kb
+from app.keyboards.main_menu import BTN_LONG_SEARCH, BTN_SEARCH, main_menu_kb
 from app.states.subscription import CreateSubscription
 from app.utils.fuzzy import find_brand, find_model
 
@@ -119,11 +119,19 @@ def render_preview(d: dict) -> tuple[str, InlineKeyboardMarkup]:
     for key, label in labels:
         v = d.get(key)
         lines.append(f"• {label}: {v if v not in (None, '') else '—'}")
-    lines += ["", "Создать подписку?"]
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Создать", callback_data="cs:done"),
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel"),
-    ]])
+    is_once = d.get("mode") == "once"
+    if is_once:
+        lines += ["", "Запустить поиск?"]
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔍 Искать", callback_data="cs:search_once"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel"),
+        ]])
+    else:
+        lines += ["", "Создать подписку?"]
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Создать", callback_data="cs:done"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cs:cancel"),
+        ]])
     return "\n".join(lines), kb
 
 
@@ -154,15 +162,20 @@ async def _try_save_edit(cb: CallbackQuery, state: FSMContext, field: str, value
 
 # ---------- Entry ----------
 
-@router.message(F.text == BTN_LONG_SEARCH)
+@router.message(F.text.in_([BTN_LONG_SEARCH, BTN_SEARCH]))
 async def start_create(message: Message, state: FSMContext) -> None:
+    mode = "once" if (message.text or "") == BTN_SEARCH else "sub"
     await state.clear()
-    await state.update_data(brand=None, brand_idx=None, model=None,
-                            year_from=None, year_to=None,
-                            price_from=None, price_to=None)
+    await state.update_data(
+        mode=mode,
+        brand=None, brand_idx=None, model=None,
+        year_from=None, year_to=None,
+        price_from=None, price_to=None,
+    )
     await state.set_state(CreateSubscription.brand)
     text, kb = render_brands(0)
-    await message.answer(text, reply_markup=kb)
+    hint = "🔍 Разовый поиск — в конце покажу объявления." if mode == "once" else "⏳ Новая подписка."
+    await message.answer(f"{hint}\n\n{text}", reply_markup=kb)
 
 
 # ---------- Бренд ----------
@@ -572,4 +585,49 @@ async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.message.edit_text("❌ Создание отменено.")
         except TelegramBadRequest:
             pass
+    await cb.answer()
+
+@router.callback_query(F.data == "cs:search_once")
+async def on_search_once(cb: CallbackQuery, state: FSMContext) -> None:
+    if cb.from_user is None or cb.message is None:
+        await cb.answer()
+        return
+    d = await state.get_data()
+    u = cb.from_user
+    await get_or_create_user(u.id, username=u.username, first_name=u.first_name)
+
+    from app.data.cars_full import BRAND_IDS, MODEL_IDS
+    from app.services.parsers.avby import search as avby_search
+
+    brand = d.get("brand")
+    model = d.get("model")
+    brand_id = BRAND_IDS.get(brand) if brand else None
+    model_id = None
+    if brand_id and model:
+        model_id = (MODEL_IDS.get(brand) or {}).get(model)
+
+    criteria = {
+        "brand_id": brand_id,
+        "model_id": model_id,
+        "year_from": d.get("year_from"),
+        "year_to": d.get("year_to"),
+        "price_from": d.get("price_from"),
+        "price_to": d.get("price_to"),
+        "query": None if brand_id else (f"{brand or ''} {model or ''}".strip() or None),
+    }
+    await state.clear()
+    await cb.message.edit_text("🔍 Ищу на av.by…")
+    try:
+        results = await avby_search(criteria, limit=100)
+    except Exception as e:
+        await cb.message.edit_text(f"❌ Ошибка поиска: {e}")
+        await cb.answer()
+        return
+    if not results:
+        await cb.message.edit_text("😔 Ничего не найдено. Попробуй смягчить критерии.")
+        await cb.answer()
+        return
+
+    from app.handlers.subscriptions import find as find_mod
+    await find_mod._render_search_results(cb, results, d)
     await cb.answer()
