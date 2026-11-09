@@ -67,12 +67,107 @@ async def ai_retry(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "ai:ok")
 async def ai_ok(cb: CallbackQuery, state: FSMContext) -> None:
+    """Пользователь подтвердил parsed — предлагаем искать или сохранить."""
+    if cb.message is None or cb.from_user is None:
+        await cb.answer()
+        return
+    d = await state.get_data()
+    parsed = d.get("ai_parsed") or {}
+    raw = d.get("ai_raw") or ""
+    await state.update_data(ai_raw=raw)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Искать сейчас", callback_data="ai:search")],
+        [InlineKeyboardButton(text="⏳ Сохранить как подписку", callback_data="ai:save")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="ai:cancel")],
+    ])
+    await cb.message.edit_text("Что сделать с критериями?", reply_markup=kb)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "ai:search")
+async def ai_search(cb: CallbackQuery, state: FSMContext) -> None:
+    if cb.message is None or cb.from_user is None:
+        await cb.answer()
+        return
     d = await state.get_data()
     parsed = d.get("ai_parsed") or {}
     await state.clear()
-    if cb.message:
-        await cb.message.edit_text(
-            "✅ Понял. Поиск по этим критериям — в следующем шаге.\n\n"
-            f"<code>{parsed}</code>"
-        )
+
+    from app.data.cars_full import BRAND_IDS, MODEL_IDS
+    from app.services.parsers.avby import search as avby_search
+    from app.handlers.subscriptions import find as find_mod
+
+    brand = parsed.get("brand")
+    model = parsed.get("model")
+    brand_id = BRAND_IDS.get(brand) if brand else None
+    model_id = None
+    if brand_id and model:
+        model_id = (MODEL_IDS.get(brand) or {}).get(model)
+
+    criteria = {
+        "brand_id": brand_id,
+        "model_id": model_id,
+        "year_from": parsed.get("year_from"),
+        "year_to": parsed.get("year_to"),
+        "price_from": parsed.get("price_from"),
+        "price_to": parsed.get("price_to"),
+        "fuel_type": parsed.get("fuel_type"),
+        "transmission": parsed.get("transmission"),
+        "mileage_to": parsed.get("mileage_to"),
+        "engine_cc_from": parsed.get("engine_cc_from"),
+        "engine_cc_to": parsed.get("engine_cc_to"),
+        "query": None if brand_id else (f"{brand or ''} {model or ''}".strip() or None),
+    }
+    await cb.message.edit_text("🔍 Ищу на av.by…")
+    try:
+        results = await avby_search(criteria, limit=100)
+    except Exception as e:
+        await cb.message.edit_text(f"❌ Ошибка поиска: {e}")
+        await cb.answer()
+        return
+    if not results:
+        await cb.message.edit_text("😔 Ничего не найдено по этим критериям.")
+        await cb.answer()
+        return
+    await find_mod._render_search_results(cb, results, parsed)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "ai:save")
+async def ai_save(cb: CallbackQuery, state: FSMContext) -> None:
+    if cb.message is None or cb.from_user is None:
+        await cb.answer()
+        return
+    d = await state.get_data()
+    parsed = d.get("ai_parsed") or {}
+    raw = d.get("ai_raw") or ""
+    await state.clear()
+
+    from app.db.repositories.subscriptions import create_subscription
+    from app.db.repositories.users import get_or_create_user
+    from app.handlers.subscriptions import find as find_mod
+    from app.services.parsers.avby import search as avby_search
+    from app.data.cars_full import BRAND_IDS, MODEL_IDS
+    from app.keyboards.main_menu import main_menu_kb
+
+    u = cb.from_user
+    user = await get_or_create_user(u.id, username=u.username, first_name=u.first_name)
+    sub = await create_subscription(
+        user_id=user.id,
+        source="avby",
+        brand=parsed.get("brand"),
+        model=parsed.get("model"),
+        year_from=parsed.get("year_from"),
+        year_to=parsed.get("year_to"),
+        price_from=parsed.get("price_from"),
+        price_to=parsed.get("price_to"),
+        fuel_type=parsed.get("fuel_type"),
+        transmission=parsed.get("transmission"),
+        mileage_to=parsed.get("mileage_to"),
+        engine_cc_from=parsed.get("engine_cc_from"),
+        engine_cc_to=parsed.get("engine_cc_to"),
+        extra={"ai_raw": raw} if raw else None,
+    )
+    await cb.message.edit_text(f"✅ Подписка #{sub.id} создана по AI-критериям.")
+    await cb.message.answer("Смотри в 📋 Мои подписки.", reply_markup=main_menu_kb())
     await cb.answer()
