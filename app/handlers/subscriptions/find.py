@@ -98,7 +98,7 @@ def _render_item(r, all_items):
     return "\n".join(lines)
 
 
-def _build_header(sub, page_items, total, offset, page, all_items):
+def _build_header(sub, page_items, total, offset, page, all_items, parsed=None):
     crit = []
     if sub is not None:
         if sub.brand:
@@ -118,6 +118,18 @@ def _build_header(sub, page_items, total, offset, page, all_items):
             extras.append(f"пробег≤{sub.mileage_to}")
         if extras:
             crit.append(", ".join(extras))
+
+    if sub is None and parsed:
+        b = parsed.get("brand")
+        m = parsed.get("model")
+        if b or m:
+            crit.append(f"{b or ''} {m or ''}".strip())
+        yf = parsed.get("year_from")
+        yt = parsed.get("year_to")
+        if yf or yt:
+            crit.append(f"{yf or '...'}–{yt or '...'}")
+        if parsed.get("price_to"):
+            crit.append(f"≤${parsed['price_to']}")
 
     start = offset + 1
     end = offset + len(page_items)
@@ -175,6 +187,8 @@ async def _run_search(cb, sub_id, offset):
     criteria = {
         "brand_id": brand_id,
         "model_id": model_id,
+        "brand": sub.brand,      # для kufar_html (query)
+        "model": sub.model,
         "year_from": sub.year_from,
         "year_to": sub.year_to,
         "price_from": sub.price_from,
@@ -226,7 +240,7 @@ async def _run_search(cb, sub_id, offset):
 
     page = offset // PAGE_SIZE + 1
     has_more = (offset + PAGE_SIZE) < total
-    header = _build_header(sub, page_items, total, offset, page, all_results)
+    header = _build_header(sub, page_items, total, offset, page, all_results, parsed=parsed_or_d if isinstance(parsed_or_d, dict) else None)
     body = _build_body(page_items, all_results)
     text = header + "\n\n" + body
     if len(text) > 4000:

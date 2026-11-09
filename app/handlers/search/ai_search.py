@@ -145,6 +145,8 @@ def _criteria_from_parsed(parsed: dict) -> dict:
     return {
         "brand_id": brand_id,
         "model_id": model_id,
+        "brand": brand,
+        "model": model,
         "year_from": parsed.get("year_from"),
         "year_to": parsed.get("year_to"),
         "price_from": parsed.get("price_from"),
