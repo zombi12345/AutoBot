@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     ai_api_key: str = ""
     ai_model: str = "gpt-4.1-mini"
     ai_enabled: bool = False
+    reef_api_key: str = ""
 
     @field_validator("admin_ids", mode="before")
     @classmethod
