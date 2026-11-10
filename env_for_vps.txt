@@ -1,0 +1,28 @@
+# Telegram
+BOT_TOKEN=9111087827:AAEGRnFGfNo5cjda0L4ofYTGkWTaP3jMCyg
+ADMIN_IDS= 1079935212
+
+# Database
+DATABASE_URL=sqlite+aiosqlite:///data/bot.db
+# av.by
+AVBY_BASE_URL=https://api.av.by
+AVBY_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64)
+
+# Kufar
+KUFAR_BASE_URL=https://api.kufar.by
+
+# Worker
+CHECK_INTERVAL_SECONDS=600
+MAX_NOTIFICATIONS_PER_RUN=20
+
+#AI
+AI_BASE_URL=https://api.n1n.ai/v1
+AI_API_KEY=sk-oWw7NzaZ2kR8eRWzSEGiU9GeOsiNxuDvRwq4XXkZdZ1wXOhN
+AI_ENABLED=1
+REEF_API_KEY=ak_live_Vui4dQFEUWQxq7NcNzaosmmq4xsLAAbY
+
+# App
+ENV=dev
+LOG_LEVEL=INFO
+PORT=10000
+WORKER_ENABLED=1
