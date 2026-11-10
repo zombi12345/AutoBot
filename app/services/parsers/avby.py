@@ -11,12 +11,12 @@ from curl_cffi.requests import AsyncSession
 log = logging.getLogger(__name__)
 
 AVBY_API = "https://api.av.by"
-AVBY_WEB = "https://cars.av.by"
+AVBY_WEB = "https://workers-playground-patient-cherry-83db.asasinjan2006.workers.dev"
 HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "Origin": "https://cars.av.by",
-    "Referer": "https://cars.av.by/",
+    "Origin": "https://workers-playground-patient-cherry-83db.asasinjan2006.workers.dev",
+    "Referer": "https://workers-playground-patient-cherry-83db.asasinjan2006.workers.dev/",
 }
 
 API_ENDPOINTS = (
@@ -306,7 +306,7 @@ def _parse_api(data: dict, limit: int) -> list[dict]:
                     currency = "USD"
             url = ad.get("publicUrl") or ad.get("url")
             if not url and ad_id:
-                url = f"https://cars.av.by/{ad_id}"
+                url = f"https://workers-playground-patient-cherry-83db.asasinjan2006.workers.dev/{ad_id}"
             if not url:
                 continue
             out.append({
