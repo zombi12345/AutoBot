@@ -270,7 +270,7 @@ async def _post_api(url: str, body: dict) -> dict | None:
 async def _get_html(session: AsyncSession, url: str) -> str | None:
     try:
         r = await session.get(url)
-        if r.status_code != 200:
+        if r.status_code not in (200, 468):
             log.warning("avby HTML %s: %s", r.status_code, url)
             return None
         return r.text
